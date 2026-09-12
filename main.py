@@ -7,7 +7,7 @@ from collections import deque, Counter
 from datetime import datetime, timedelta
 from flask import Flask, jsonify
 
-TELEGRAM_TOKEN = "8771982889:AAFzEnu7-DS14gNktrGfsp1p28haP8-hoMs"
+TELEGRAM_TOKEN = "8771982889:AAFzEnu7-DS14gNktrGfpS1p28haP8-hoMs"
 CHAT_ID = "-1004357168336"
 
 app = Flask(__name__)
