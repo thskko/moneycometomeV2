@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from flask import Flask, jsonify
 
 TELEGRAM_TOKEN = "8771982889:AAFzEnu7-DSl4gNktrGfpS1p28haP8-hoMs"
-CHAT_ID = " -1004357168336"
+CHAT_ID = "-1004357168336"
 
 app = Flask(__name__)
 global_agent = None
