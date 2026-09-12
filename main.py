@@ -7,8 +7,8 @@ from collections import deque, Counter
 from datetime import datetime, timedelta
 from flask import Flask, jsonify
 
-TELEGRAM_TOKEN = "8771982889:AAFzEnu7-DS14gNktrGfpS1p28haP8-hoMs"
-CHAT_ID = "-1004357168336"
+TELEGRAM_TOKEN = "8913070806:AAF3rP0zKJtofE-5KVesqcdoHzn7Go0avho"
+CHAT_ID = "-1004402480797"
 
 app = Flask(__name__)
 global_agent = None
@@ -206,9 +206,12 @@ class AISniperEngineV3:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
         try:
-            requests.post(url, json=payload, timeout=10)
+            r = requests.post(url, json=payload, timeout=10)
+            print(f"📤 TG: {r.status_code} | {message[:40]}", flush=True)
+            if r.status_code != 200:
+                print(f"❌ TG Error: {r.text}", flush=True)
         except Exception as e:
-            print(f"TG Err: {e}", flush=True)
+            print(f"❌ TG Exception: {e}", flush=True)
     
     # =========================================================
     # 🧠 50 BOT STRATEGIES
@@ -217,7 +220,6 @@ class AISniperEngineV3:
         n = len(arr)
         if n < 15: return None
         
-        # --- Group 1: Trend (0-9) ---
         if bot_idx == 0: return arr[-1]
         elif bot_idx == 1: return "Small" if arr[-1]=="Big" else "Big"
         elif bot_idx == 2: return "Big" if arr[-3:].count("Big")>=2 else "Small"
@@ -242,8 +244,6 @@ class AISniperEngineV3:
         elif bot_idx == 9:
             b=sum(1 for x in arr[-10:] if x=="Big")
             return "Big" if b>=6 else "Small"
-        
-        # --- Group 2: Markov (10-19) ---
         elif bot_idx == 10:
             last=arr[-1]
             nxt=[arr[i+1] for i in range(n-1) if arr[i]==last]
@@ -298,8 +298,6 @@ class AISniperEngineV3:
             if b>=18: return "Small"
             if b<=12: return "Big"
             return None
-        
-        # --- Group 3: Statistical (20-29) ---
         elif bot_idx == 20:
             b=arr[-10:].count("Big")+1
             s=arr[-10:].count("Small")+1
@@ -360,8 +358,6 @@ class AISniperEngineV3:
             if b>=tn-3: return "Small"
             if b<=3: return "Big"
             return None
-        
-        # --- Group 4: Pattern (30-39) ---
         elif bot_idx == 30:
             if arr[-3:]==["Big","Small","Small"]: return "Big"
             return None
@@ -405,8 +401,6 @@ class AISniperEngineV3:
             if l5>=4 and l20<=8: return "Big"
             if l5<=1 and l20>=12: return "Small"
             return None
-        
-        # --- Group 5: AI/Adaptive (40-49) ---
         elif bot_idx == 40: return "Big" if arr.count("Big")>=n/2 else "Small"
         elif bot_idx == 41: return "Small" if arr.count("Big")>=n/2 else "Big"
         elif bot_idx == 42: return arr[-1]
@@ -423,12 +417,11 @@ class AISniperEngineV3:
             return "Small" if bigs>=25 else "Big"
     
     # =========================================================
-    # 🎯 PATTERN DETECTION (STRICT)
+    # 🎯 PATTERN DETECTION
     # =========================================================
     def detect_patterns(self, arr):
         if len(arr) < 15: return None, 0
         
-        # Dragon (6+ continue, 8+ reverse)
         s = 1
         for x in reversed(arr[:-1]):
             if x == arr[-1]: s += 1
@@ -441,14 +434,12 @@ class AISniperEngineV3:
             self.pattern_stats["dragon_continue"] += 1
             return arr[-1], 88
         
-        # Ping-pong (7+)
         alt = sum(1 for i in range(-9, -1) if arr[i] != arr[i+1])
         if alt >= 7:
             self.pattern_stats["pingpong"] += 1
             nxt = "Small" if arr[-1]=="Big" else "Big"
             return nxt, 87
         
-        # Triple pattern
         if len(arr) >= 8:
             if arr[-3:]==["Big","Big","Big"] and arr[-6:-3]==["Small","Small","Small"]:
                 self.pattern_stats["triple_b"] += 1
@@ -457,7 +448,6 @@ class AISniperEngineV3:
                 self.pattern_stats["triple_s"] += 1
                 return "Big", 82
         
-        # Double-top/bottom
         if len(arr) >= 5:
             if arr[-1]==arr[-2]=="Big" and arr[-3]==arr[-4]==arr[-5]=="Small":
                 self.pattern_stats["double_top"] += 1
@@ -486,20 +476,17 @@ class AISniperEngineV3:
         return None, 0
     
     # =========================================================
-    # 🎯 MAIN SIGNAL GENERATOR (STRICT + WEIGHT)
+    # 🎯 MAIN SIGNAL GENERATOR
     # =========================================================
     def generate_signal(self, arr):
-        # 1) Pattern detection (HIGHEST priority)
         pat_sig, pat_conf = self.detect_patterns(arr)
         if pat_sig and pat_conf >= 85:
             return pat_sig, pat_conf, "Pattern"
         
-        # 2) Multi-timeframe
         mtf_sig, mtf_conf = self.multi_timeframe(arr)
         if mtf_sig:
             return mtf_sig, mtf_conf, "Multi-TF"
         
-        # 3) 50-Bot Weighted Voting
         valid = {}
         for i in range(self.num_bots):
             b_id = f"Bot_{i+1}"
@@ -523,19 +510,16 @@ class AISniperEngineV3:
         big_pct = big_s / total
         conf = max(big_pct, 1-big_pct) * 100
         
-        # 4) Confidence threshold 85% (STRICT)
         if big_pct >= 0.85:
             return "Big", conf, f"STRONG Big"
         elif big_pct <= 0.15:
             return "Small", conf, f"STRONG Small"
         
-        # 5) Extreme fallback (stricter)
         if len(arr) >= 20:
             b20 = arr[-20:].count("Big")
             if b20 >= 18: return "Small", 90, "Extreme 18+"
             if b20 <= 2:  return "Big", 90, "Extreme 2-"
         
-        # Skip
         return None, conf, "Low confidence"
     
     # =========================================================
@@ -548,18 +532,15 @@ class AISniperEngineV3:
         
         short = "..." + str(period)[-3:]
         
-        # 1) Evaluate previous prediction
         if self.active_prediction:
             pred = self.active_prediction
             win = (current_result.lower() == pred.lower())
             
-            # Confusion matrix
             if pred == "Big" and current_result == "Big": self.confusion_matrix["BB"] += 1
             elif pred == "Big" and current_result == "Small": self.confusion_matrix["BS"] += 1
             elif pred == "Small" and current_result == "Big": self.confusion_matrix["SB"] += 1
             else: self.confusion_matrix["SS"] += 1
             
-            # Bankroll update
             self.bankroll.update(win, self.current_step)
             
             if win:
@@ -567,7 +548,6 @@ class AISniperEngineV3:
                 step_key = min(self.current_step, 3)
                 self.win_by_step[step_key] += 1
                 
-                # ✅ Win စာ ရိုးရှင်း
                 self.send_telegram(
                     f"✅ <b>WIN</b>\n"
                     f"📊 WR: {self.get_wr():.1f}% | Win3: {self.get_win3_rate():.1f}%\n"
@@ -576,7 +556,6 @@ class AISniperEngineV3:
                 self.current_step = 0
                 self.consecutive_losses = 0
             else:
-                # ❌ Loss စာ မပို့
                 self.total_losses += 1
                 self.current_step += 1
                 self.consecutive_losses += 1
@@ -585,29 +564,23 @@ class AISniperEngineV3:
             
             self.active_prediction = None
         
-        # 2) Update bot performance
         if len(self.window) > 0:
             self.update_bot_performance(current_result)
         
         self.window.append(current_result)
         
-        # 3) Warm-up
         if len(self.window) < 20:
             self.send_telegram(f"⏳ Warm-up {short} ({len(self.window)}/20)")
             return
         
         arr = list(self.window)
-        
-        # 4) Generate signal
         signal, conf, reason = self.generate_signal(arr)
         
-        # 5) Auto-optimize every 50 rounds
         self.rounds_since_optimize += 1
         if self.rounds_since_optimize >= 50:
             self.auto_optimize()
             self.rounds_since_optimize = 0
         
-        # 6) Skip if low confidence — ✅ Skip Message ပြန် ပို့
         if signal is None:
             self.total_skips += 1
             self.send_telegram(
@@ -616,7 +589,6 @@ class AISniperEngineV3:
             )
             return
         
-        # 7) Emit signal
         self.active_prediction = signal
         self.total_signals += 1
         self.last_triggered_bot = reason
@@ -634,7 +606,7 @@ class AISniperEngineV3:
         self.send_telegram(msg)
     
     # =========================================================
-    # 🔧 BOT PERFORMANCE — WEIGHT SYSTEM
+    # 🔧 BOT PERFORMANCE
     # =========================================================
     def update_bot_performance(self, actual):
         for b_id, stats in self.bot_stats.items():
@@ -649,7 +621,6 @@ class AISniperEngineV3:
             t = stats["wins"] + stats["losses"]
             stats["wr"] = stats["wins"]/t if t>0 else 0.0
             
-            # ✅ ပိုပြင်းထန်တဲ့ Weight system
             if t >= 5:
                 if stats["wr"] >= 0.70: stats["weight"] = 4.0
                 elif stats["wr"] >= 0.65: stats["weight"] = 3.0
@@ -742,10 +713,7 @@ def poll_telegram(agent):
                             f"  S1: {agent.win_by_step[0]}\n"
                             f"  S2: {agent.win_by_step[1]}\n"
                             f"  S3: {agent.win_by_step[2]}\n"
-                            f"  S4+: {agent.win_by_step[3]}\n\n"
-                            f"<b>Confusion Matrix:</b>\n"
-                            f"  BB:{cm['BB']} BS:{cm['BS']}\n"
-                            f"  SB:{cm['SB']} SS:{cm['SS']}"
+                            f"  S4+: {agent.win_by_step[3]}"
                         )
                     elif txt == "/pause":
                         agent.is_paused = True
@@ -759,16 +727,14 @@ def poll_telegram(agent):
                         agent.send_telegram("🔄 Step reset")
                     elif txt == "/top":
                         top = sorted(agent.bot_stats.items(), key=lambda x: x[1]["wr"], reverse=True)[:10]
-                        s = "\n".join([f"{bid}: {st['wr']*100:.0f}% ({st['wins']}W) w:{st['weight']:.2f}" for bid, st in top])
+                        s = "\n".join([f"{bid}: {st['wr']*100:.0f}% ({st['wins']}W)" for bid, st in top])
                         agent.send_telegram(f"🏆 <b>Top 10 Bots</b>\n{s}")
                     elif txt == "/bank":
                         b = agent.bankroll
                         agent.send_telegram(
                             f"💰 <b>Bankroll Status</b>\n"
                             f"Balance: {b.balance:.2f}\n"
-                            f"P/L: {b.balance - b.initial:+.2f}\n"
-                            f"Peak: {b.session_peak:.2f}\n"
-                            f"Max DD: {b.max_drawdown:.2f}"
+                            f"P/L: {b.balance - b.initial:+.2f}"
                         )
                     elif txt == "/help":
                         agent.send_telegram(
