@@ -12,9 +12,6 @@ CHAT_ID = "-1004402480797"
 app = Flask(__name__)
 global_agent = None
 
-# Dynamic Settings
-BASE_THRESHOLD = 70
-
 
 # ==========================================
 # 📊 DASHBOARD
@@ -23,7 +20,7 @@ BASE_THRESHOLD = 70
 def home():
     global global_agent
     if not global_agent:
-        return "<h3>📊 Mean Reversion v2.0 starting...</h3>"
+        return "<h3>⚡ Fast + Powerful v3.0 starting...</h3>"
     
     a = global_agent
     total = a.total_wins + a.total_losses
@@ -38,10 +35,11 @@ def home():
     
     pat_wr = ""
     for k, v in sorted(a.pattern_wr.items(), key=lambda x: x[1], reverse=True)[:10]:
-        pat_wr += f"<tr><td>{k}</td><td>{v*100:.1f}%</td></tr>"
+        t = a.pattern_total[k]
+        pat_wr += f"<tr><td>{k}</td><td>{v*100:.1f}%</td><td>{t}</td></tr>"
     
     return f"""
-    <html><head><title>Mean Reversion v2.0</title>
+    <html><head><title>Fast + Powerful v3.0</title>
     <meta http-equiv="refresh" content="15">
     <style>
     body{{background:#0a0e27;color:#0ff;font-family:monospace;padding:20px}}
@@ -53,7 +51,7 @@ def home():
     th,td{{padding:6px;border:1px solid #0ff;text-align:left;font-size:12px}}
     th{{background:#0ff;color:#000}}
     </style></head><body>
-    <h1>📊 MEAN REVERSION v2.0</h1>
+    <h1>⚡ FAST + POWERFUL v3.0</h1>
     
     <div class="box">
       <h2>📊 Performance</h2>
@@ -82,7 +80,7 @@ def home():
     <div class="box">
       <h2>🎯 Pattern WR</h2>
       <table>
-        <tr><th>Pattern</th><th>WR</th></tr>
+        <tr><th>Pattern</th><th>WR</th><th>Count</th></tr>
         {pat_wr}
       </table>
     </div>
@@ -97,9 +95,9 @@ def home():
 
 
 # ==========================================
-# 📊 MEAN REVERSION v2.0 ENGINE
+# ⚡ FAST + POWERFUL ENGINE v3.0
 # ==========================================
-class MeanReversionEngineV2:
+class FastPowerfulEngine:
     def __init__(self):
         global global_agent
         global_agent = self
@@ -124,7 +122,7 @@ class MeanReversionEngineV2:
         
         self.pattern_stats = Counter()
         
-        # 🆕 Pattern WR Tracking
+        # Pattern WR Tracking
         self.pattern_wr = defaultdict(lambda: 0.5)
         self.pattern_win = defaultdict(int)
         self.pattern_total = defaultdict(int)
@@ -133,24 +131,23 @@ class MeanReversionEngineV2:
         return 2 ** self.current_step
     
     # =========================================================
-    # 🆕 DYNAMIC THRESHOLD (Update 2)
+    # DYNAMIC THRESHOLD (Lower for Fast Mode)
     # =========================================================
     def get_dynamic_threshold(self):
-        """WR အလိုက် Threshold auto-adjust"""
         total = self.total_wins + self.total_losses
         if total < 10:
-            return 65  # Data နည်းရင် လျှော့
+            return 60    # Fast Mode — 60%
         
         wr = self.get_wr()
         
         if wr >= 75:
-            return 78   # WR ကောင်းရင် တင်း
+            return 72
         elif wr >= 65:
-            return 72   # ပုံမှန်
+            return 68
         elif wr >= 55:
-            return 68   # လျှော့
+            return 63
         else:
-            return 65   # အလွန်လျှော့
+            return 60
     
     def send_telegram(self, message):
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -162,149 +159,120 @@ class MeanReversionEngineV2:
             print(f"❌ TG Err: {e}", flush=True)
     
     # =========================================================
-    # 🆕 STATISTICAL CONFIRMATION (Update 1)
+    # STATISTICAL CONFIRMATION (Light)
     # =========================================================
     def statistical_confirmation(self, arr, signal):
-        """Z-score Test — Signal Confirm"""
         if len(arr) < 30:
-            return True, 50  # Data နည်းရင် pass
+            return True, 50
         
-        recent = arr[-50:]
+        recent = arr[-30:]
         n = len(recent)
         
         if signal == "Big":
             count = recent.count("Big")
-            expected = n / 2
-            std = (n * 0.25) ** 0.5
-            z_score = (count - expected) / std if std > 0 else 0
-            
-            # Z-score > 1.5 → Strong
-            if z_score > 1.5:
-                return True, min(95, 70 + z_score * 5)
-            elif z_score > 0.5:
-                return True, 65
-            else:
-                return False, 0
-        
-        else:  # Small
+        else:
             count = recent.count("Small")
-            expected = n / 2
-            std = (n * 0.25) ** 0.5
-            z_score = (count - expected) / std if std > 0 else 0
-            
-            if z_score > 1.5:
-                return True, min(95, 70 + z_score * 5)
-            elif z_score > 0.5:
-                return True, 65
-            else:
-                return False, 0
+        
+        expected = n / 2
+        std = (n * 0.25) ** 0.5
+        z_score = (count - expected) / std if std > 0 else 0
+        
+        # Light Z-score 0.3+
+        if z_score > 0.3:
+            return True, min(95, 65 + z_score * 8)
+        else:
+            return False, 0
     
     # =========================================================
-    # 🆕 MULTI-TIMEFRAME CONSENSUS (Update 3)
-    # =========================================================
-    def multi_tf_consensus(self, arr):
-        """Short + Medium + Long — 3 ခုလုံး တူရင် Signal"""
-        if len(arr) < 100:
-            return None, 0, "mtf"
-        
-        s_big = arr[-10:].count("Big")
-        m_big = arr[-30:].count("Big")
-        l_big = arr[-100:].count("Big")
-        
-        # Short (10) — Big 7+ or 3-
-        short = "Big" if s_big >= 7 else "Small" if s_big <= 3 else None
-        
-        # Medium (30) — Big 20+ or 10-
-        medium = "Big" if m_big >= 20 else "Small" if m_big <= 10 else None
-        
-        # Long (100) — Big 60+ or 40-
-        long_t = "Big" if l_big >= 60 else "Small" if l_big <= 40 else None
-        
-        # 3 ခုလုံး တူ
-        if short and medium and long_t and short == medium == long_t:
-            self.pattern_stats["mtf_consensus"] += 1
-            return short, 90, "mtf"
-        
-        return None, 0, "mtf"
-    
-    # =========================================================
-    # PATTERN 1: MEAN REVERSION
+    # PATTERN 1: MEAN REVERSION (Fast)
     # =========================================================
     def pattern_mean_reversion(self, arr):
-        if len(arr) < 20: return None, 0, "mean_rev"
+        if len(arr) < 15: return None, 0, "mean_rev"
         
-        b20 = arr[-20:].count("Big")
+        b15 = arr[-15:].count("Big")
         b10 = arr[-10:].count("Big")
         
-        # Extreme
-        if b20 >= 18:
-            self.pattern_stats["mr_18+"] += 1
-            return "Small", 92, "mean_rev"
-        if b20 <= 2:
-            self.pattern_stats["mr_2-"] += 1
-            return "Big", 92, "mean_rev"
-        
-        if b20 >= 17:
-            self.pattern_stats["mr_17+"] += 1
+        # Extreme (Fast Trigger)
+        if b15 >= 13:    # 15 မှာ 13+
+            self.pattern_stats["mr_13+_15"] += 1
             return "Small", 88, "mean_rev"
-        if b20 <= 3:
-            self.pattern_stats["mr_3-"] += 1
+        if b15 <= 2:
+            self.pattern_stats["mr_2-_15"] += 1
             return "Big", 88, "mean_rev"
         
-        if b20 >= 16 and b10 >= 8:
-            self.pattern_stats["mr_multi"] += 1
+        if b15 >= 12:    # 15 မှာ 12+
+            self.pattern_stats["mr_12+_15"] += 1
             return "Small", 85, "mean_rev"
-        if b20 <= 4 and b10 <= 2:
-            self.pattern_stats["mr_multi_low"] += 1
+        if b15 <= 3:
+            self.pattern_stats["mr_3-_15"] += 1
             return "Big", 85, "mean_rev"
+        
+        if b15 >= 11 and b10 >= 7:
+            self.pattern_stats["mr_multi"] += 1
+            return "Small", 82, "mean_rev"
+        if b15 <= 4 and b10 <= 3:
+            self.pattern_stats["mr_multi_low"] += 1
+            return "Big", 82, "mean_rev"
         
         return None, 0, "mean_rev"
     
     # =========================================================
-    # PATTERN 2: ZONE REJECTION
+    # PATTERN 2: ZONE REJECTION (Fast)
     # =========================================================
     def pattern_zone(self, arr):
-        if len(arr) < 10: return None, 0, "zone"
+        if len(arr) < 8: return None, 0, "zone"
         
-        b10 = arr[-10:].count("Big")
+        b8 = arr[-8:].count("Big")
         
-        if b10 >= 8:
-            self.pattern_stats["zone_8+"] += 1
+        if b8 >= 7:      # 8 မှာ 7+
+            self.pattern_stats["zone_7+_8"] += 1
             return "Small", 82, "zone"
-        if b10 <= 2:
-            self.pattern_stats["zone_2-"] += 1
+        if b8 <= 1:
+            self.pattern_stats["zone_1-_8"] += 1
             return "Big", 82, "zone"
+        
+        if b8 >= 6:
+            self.pattern_stats["zone_6+_8"] += 1
+            return "Small", 78, "zone"
+        if b8 <= 2:
+            self.pattern_stats["zone_2-_8"] += 1
+            return "Big", 78, "zone"
         
         return None, 0, "zone"
     
     # =========================================================
-    # PATTERN 3: DRAGON
+    # PATTERN 3: DRAGON (Fast)
     # =========================================================
     def pattern_dragon(self, arr):
-        if len(arr) < 8: return None, 0, "dragon"
+        if len(arr) < 6: return None, 0, "dragon"
         
         streak = 1
         for x in reversed(arr[:-1]):
             if x == arr[-1]: streak += 1
             else: break
         
-        if streak >= 8:
-            self.pattern_stats["dragon_rev_8+"] += 1
+        # Exhaustion 7+
+        if streak >= 7:
+            self.pattern_stats["dragon_rev_7+"] += 1
             return "Small" if arr[-1]=="Big" else "Big", 90, "dragon"
-        if streak >= 6:
-            self.pattern_stats["dragon_cont_6+"] += 1
-            return arr[-1], 88, "dragon"
+        
+        # Momentum 5+
         if streak >= 5:
-            self.pattern_stats["dragon_rev_5"] += 1
-            return "Small" if arr[-1]=="Big" else "Big", 80, "dragon"
+            self.pattern_stats["dragon_cont_5+"] += 1
+            return arr[-1], 85, "dragon"
+        
+        # Exhaustion 4
+        if streak >= 4:
+            self.pattern_stats["dragon_rev_4"] += 1
+            return "Small" if arr[-1]=="Big" else "Big", 75, "dragon"
         
         return None, 0, "dragon"
     
     # =========================================================
-    # PATTERN 4: MARKOV 2
+    # PATTERN 4: MARKOV 2 (Fast)
     # =========================================================
     def pattern_markov2(self, arr):
-        if len(arr) < 15: return None, 0, "markov2"
+        if len(arr) < 12: return None, 0, "markov2"
         
         last2 = tuple(arr[-2:])
         next_after = []
@@ -312,45 +280,98 @@ class MeanReversionEngineV2:
             if tuple(arr[i:i+2]) == last2:
                 next_after.append(arr[i+2])
         
-        if len(next_after) < 3:
+        if len(next_after) < 2:
             return None, 0, "markov2"
         
         counter = Counter(next_after)
         most_common, count = counter.most_common(1)[0]
         
-        if count / len(next_after) >= 0.60:
+        # 55%+ (Fast)
+        ratio = count / len(next_after)
+        if ratio >= 0.55:
             self.pattern_stats["markov2_hit"] += 1
-            return most_common, 78, "markov2"
+            conf = min(85, 65 + ratio * 20)
+            return most_common, conf, "markov2"
         
         return None, 0, "markov2"
     
     # =========================================================
-    # PATTERN 5: FREQUENCY BIAS
+    # PATTERN 5: FREQUENCY BIAS (Fast)
     # =========================================================
     def pattern_frequency(self, arr):
-        if len(arr) < 30: return None, 0, "freq"
+        if len(arr) < 20: return None, 0, "freq"
         
-        b30 = arr[-30:].count("Big")
+        b20 = arr[-20:].count("Big")
         b10 = arr[-10:].count("Big")
         
-        if b30 >= 22:
-            self.pattern_stats["freq_22+"] += 1
-            return "Small", 80, "freq"
-        if b30 <= 8:
-            self.pattern_stats["freq_8-"] += 1
-            return "Big", 80, "freq"
+        if b20 >= 15:    # 20 မှာ 15+
+            self.pattern_stats["freq_15+_20"] += 1
+            return "Small", 82, "freq"
+        if b20 <= 5:
+            self.pattern_stats["freq_5-_20"] += 1
+            return "Big", 82, "freq"
         
-        if b30 >= 20 and b10 >= 8:
+        if b20 >= 14 and b10 >= 7:
             self.pattern_stats["freq_multi_high"] += 1
             return "Small", 78, "freq"
-        if b30 <= 10 and b10 <= 2:
+        if b20 <= 6 and b10 <= 3:
             self.pattern_stats["freq_multi_low"] += 1
             return "Big", 78, "freq"
         
         return None, 0, "freq"
     
     # =========================================================
-    # 🆕 UPDATE PATTERN WR
+    # 🆕 PATTERN 6: STREAK BREAK 3
+    # =========================================================
+    def pattern_streak_break(self, arr):
+        if len(arr) < 5: return None, 0, "streak3"
+        
+        streak = 1
+        for x in reversed(arr[:-1]):
+            if x == arr[-1]: streak += 1
+            else: break
+        
+        # 3 ဆက် → Reverse
+        if streak == 3:
+            self.pattern_stats["streak3_rev"] += 1
+            return "Small" if arr[-1]=="Big" else "Big", 72, "streak3"
+        
+        return None, 0, "streak3"
+    
+    # =========================================================
+    # 🆕 PATTERN 7: ALTERNATION 5
+    # =========================================================
+    def pattern_alternation(self, arr):
+        if len(arr) < 6: return None, 0, "alt"
+        
+        alt = sum(1 for i in range(-5, -1) if arr[i] != arr[i+1])
+        
+        if alt >= 4:
+            self.pattern_stats["alt_4+"] += 1
+            nxt = "Small" if arr[-1]=="Big" else "Big"
+            return nxt, 75, "alt"
+        
+        return None, 0, "alt"
+    
+    # =========================================================
+    # 🆕 PATTERN 8: HIGH/LOW 5
+    # =========================================================
+    def pattern_highlow5(self, arr):
+        if len(arr) < 5: return None, 0, "hl5"
+        
+        b5 = arr[-5:].count("Big")
+        
+        if b5 >= 5:
+            self.pattern_stats["hl5_all_big"] += 1
+            return "Small", 78, "hl5"
+        if b5 <= 0:
+            self.pattern_stats["hl5_all_small"] += 1
+            return "Big", 78, "hl5"
+        
+        return None, 0, "hl5"
+    
+    # =========================================================
+    # UPDATE PATTERN WR
     # =========================================================
     def update_pattern_wr(self, actual):
         for pat_name, sig in self.active_patterns_used:
@@ -363,28 +384,27 @@ class MeanReversionEngineV2:
                 self.pattern_wr[pat_name] = self.pattern_win[pat_name] / t
     
     # =========================================================
-    # 🎯 MAIN SIGNAL GENERATOR v2.0
+    # 🎯 MAIN SIGNAL GENERATOR v3.0
     # =========================================================
     def generate_signal(self, arr):
         """
-        Mean Reversion + 3 Updates:
-        1. Statistical Confirmation
-        2. Dynamic Threshold
-        3. Multi-Timeframe Consensus
+        Fast + Powerful:
+        - Pattern 8 မျိုး
+        - Light Z-score (0.3)
+        - Low Threshold (60-72%)
+        - Fast Condition
         """
         
-        # 🆕 1) Multi-TF Consensus (Highest Priority)
-        mtf_sig, mtf_conf, _ = self.multi_tf_consensus(arr)
-        if mtf_sig and mtf_conf >= 85:
-            return mtf_sig, mtf_conf, "🌐 Multi-TF Consensus", [("mtf", mtf_sig)]
-        
-        # 2) Run Pattern 5
+        # Run Pattern 8
         patterns = [
             self.pattern_mean_reversion(arr),
             self.pattern_zone(arr),
             self.pattern_dragon(arr),
             self.pattern_markov2(arr),
             self.pattern_frequency(arr),
+            self.pattern_streak_break(arr),
+            self.pattern_alternation(arr),
+            self.pattern_highlow5(arr),
         ]
         
         # Weighted Vote
@@ -396,44 +416,44 @@ class MeanReversionEngineV2:
         for sig, conf, pat_name in patterns:
             if sig is None: continue
             
-            # 🆕 Pattern WR Weight
+            # Pattern WR Weight (mild)
             pat_wr = self.pattern_wr[pat_name]
-            wr_weight = 0.5 + pat_wr
+            wr_weight = 0.7 + pat_wr * 0.6
             
             weight = (conf / 100.0) * wr_weight
             if sig == "Big":
                 big_score += weight
-                reasons.append(f"B({pat_name[:4]})")
+                reasons.append(f"B({pat_name[:5]})")
             else:
                 small_score += weight
-                reasons.append(f"S({pat_name[:4]})")
+                reasons.append(f"S({pat_name[:5]})")
             
             patterns_used.append((pat_name, sig))
         
         total = big_score + small_score
-        if total < 1.0:
+        if total < 0.5:  # Fast — 0.5 score
             return None, 0, f"No pattern (score {total:.2f})", []
         
         big_pct = big_score / total
         conf = max(big_pct, 1 - big_pct) * 100
         
-        # Preliminary Signal
+        # Signal
         if big_pct >= 0.5:
             final_signal = "Big"
         else:
             final_signal = "Small"
         
-        # 🆕 2) Statistical Confirmation
+        # Light Statistical Confirmation
         stat_ok, stat_conf = self.statistical_confirmation(arr, final_signal)
         if not stat_ok:
-            return None, conf, f"Statistical fail ({stat_conf:.0f}%)", patterns_used
+            return None, conf, f"Stat fail ({conf:.0f}%)", patterns_used
         
-        # 🆕 3) Dynamic Threshold
+        # Dynamic Threshold
         threshold = self.get_dynamic_threshold()
         if conf < threshold:
             return None, conf, f"Weak ({conf:.0f}% < {threshold}%)", patterns_used
         
-        reason = f"MR: {' + '.join(reasons)} ({conf:.0f}%)"
+        reason = f"⚡ {' + '.join(reasons[:3])} ({conf:.0f}%)"
         return final_signal, conf, reason, patterns_used
     
     # =========================================================
@@ -453,7 +473,6 @@ class MeanReversionEngineV2:
         if self.active_prediction:
             win = (self.active_prediction == current_result)
             
-            # 🆕 Update Pattern WR
             self.update_pattern_wr(current_result)
             
             if win:
@@ -482,9 +501,9 @@ class MeanReversionEngineV2:
         # 2) Append
         self.number_window.append(number)
         
-        # 3) Warm-up
-        if len(self.number_window) < 20:
-            self.send_telegram(f"⏳ Warm-up {short} ({len(self.number_window)}/20)")
+        # 3) Warm-up (Fast — 15)
+        if len(self.number_window) < 15:
+            self.send_telegram(f"⏳ Warm-up {short} ({len(self.number_window)}/15)")
             return
         
         # 4) Signal
@@ -507,7 +526,7 @@ class MeanReversionEngineV2:
         
         stars = "⭐" * min(int(conf / 20), 5)
         self.send_telegram(
-            f"📊 <b>MEAN REVERSION v2.0</b> {stars}\n"
+            f"⚡ <b>FAST + POWERFUL SIGNAL</b> {stars}\n"
             f"📅 Period: {short}\n"
             f"📌 {reason}\n"
             f"🎯 <b>{signal.upper()}</b>\n"
@@ -552,7 +571,7 @@ def poll_telegram(agent):
                     
                     if txt == "/status":
                         agent.send_telegram(
-                            f"📊 <b>MEAN REVERSION v2.0</b>\n\n"
+                            f"⚡ <b>FAST + POWERFUL v3.0</b>\n\n"
                             f"⚙️ {'PAUSED 🛑' if agent.is_paused else 'RUNNING 🟢'}\n"
                             f"Signals: {agent.total_signals} | Skips: {agent.total_skips}\n"
                             f"✅ W: {agent.total_wins} | ❌ L: {agent.total_losses}\n"
@@ -593,8 +612,8 @@ def poll_telegram(agent):
 # MAIN LOOP
 # ==========================================
 def run_bot():
-    print("📊 Mean Reversion v2.0 (3 Updates) starting...", flush=True)
-    agent = MeanReversionEngineV2()
+    print("⚡ Fast + Powerful v3.0 starting...", flush=True)
+    agent = FastPowerfulEngine()
     threading.Thread(target=poll_telegram, args=(agent,), daemon=True).start()
     
     last_period = ""
@@ -630,7 +649,7 @@ def run_bot():
                     
                     if period != last_period:
                         last_period = period
-                        print(f"📊 Sync {period} → {number}", flush=True)
+                        print(f"⚡ Sync {period} → {number}", flush=True)
                         agent.analyze_round(period, number)
         except Exception as e:
             print(f"API Err: {e}", flush=True)
