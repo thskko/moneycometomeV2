@@ -2,19 +2,18 @@ import requests
 import time
 import os
 import threading
-from collections import deque, Counter, defaultdict
+from collections import deque, Counter
 from datetime import datetime
 from flask import Flask, jsonify
 
-# ==========================================
-# TELEGRAM CONFIG
-# ==========================================
 TELEGRAM_TOKEN = "8913070806:AAF3rP0zKJtofE-5KVesqcdoHzn7Go0avho"
 CHAT_ID = "-1004402480797"
-# ==========================================
 
 app = Flask(__name__)
 global_agent = None
+
+HOT_STREAK = 4          # 4+ win streak = HOT
+MIN_CONFIDENCE = 66     # 66%+ vote လိုတယ်
 
 
 # ==========================================
@@ -24,37 +23,36 @@ global_agent = None
 def home():
     global global_agent
     if not global_agent:
-        return "<h3>🔢 Number Bot v3.0 starting...</h3>"
+        return "<h3>🔥 Step 1 Anti-Streak v2.0 starting...</h3>"
     
     a = global_agent
     total = a.total_wins + a.total_losses
     wr = (a.total_wins / total * 100) if total > 0 else 0.0
-    win3 = a.get_win3_rate()
     
-    last_nums = " → ".join([str(n) for n in list(a.number_window)[-20:]])
+    bot_rows = ""
+    sorted_bots = sorted(a.bot_stats.items(), key=lambda x: x[1]["win_streak"], reverse=True)
+    for b_id, s in sorted_bots[:20]:
+        streak_icon = "🔥" if s["win_streak"] >= HOT_STREAK else ("⚡" if s["win_streak"] >= 3 else "")
+        bot_rows += f"<tr><td>{b_id}</td><td>{s['wins']}</td><td>{s['losses']}</td><td>{s['wr']*100:.1f}%</td><td><b>{s['win_streak']}</b> {streak_icon}</td></tr>"
     
-    freq = Counter(a.number_window)
-    freq_str = " | ".join([f"{i}:{freq.get(i, 0)}" for i in range(10)])
-    
-    pat_rows = "".join([
-        f"<tr><td>{k}</td><td>{v}</td><td>{a.pattern_wr.get(k, 0)*100:.1f}%</td></tr>"
-        for k, v in a.pattern_stats.most_common(15)
-    ])
+    hot_bots = [(b, s) for b, s in a.bot_stats.items() if s["win_streak"] >= HOT_STREAK]
+    hot_str = ", ".join([f"{b}({s['win_streak']})" for b, s in hot_bots]) if hot_bots else "None"
     
     return f"""
-    <html><head><title>Number Bot v3.0</title>
+    <html><head><title>Anti-Streak v2.0</title>
     <meta http-equiv="refresh" content="15">
     <style>
     body{{background:#0a0e27;color:#0ff;font-family:monospace;padding:20px}}
     h1,h2{{color:#0ff;text-shadow:0 0 10px #0ff}}
     .box{{background:#1a1f3a;border:1px solid #0ff;padding:15px;margin:10px 0;border-radius:8px}}
     .big{{font-size:32px;color:#0f0;font-weight:bold}}
-    .nums{{font-size:18px;color:#ff0;word-wrap:break-word}}
     table{{width:100%;border-collapse:collapse}}
-    th,td{{padding:8px;border:1px solid #0ff;text-align:left}}
+    th,td{{padding:6px;border:1px solid #0ff;text-align:left;font-size:12px}}
     th{{background:#0ff;color:#000}}
+    .hot{{color:#f44;font-weight:bold}}
     </style></head><body>
-    <h1>🔢 NUMBER PATTERN BOT v3.0</h1>
+    <h1>🔥 STEP 1 ANTI-STREAK v2.0</h1>
+    <p>Streak Threshold: <b>{HOT_STREAK}+</b> | Confidence: <b>{MIN_CONFIDENCE}%+</b></p>
     
     <div class="box">
       <h2>📊 Performance</h2>
@@ -62,57 +60,35 @@ def home():
       <p>Signals: {a.total_signals} | Skips: {a.total_skips}</p>
       <p>Wins: {a.total_wins} | Losses: {a.total_losses}</p>
       <p>Win Rate: <span class="big">{wr:.2f}%</span></p>
-      <p>Win-in-3: <span class="big">{win3:.1f}%</span></p>
       <p>Current Step: {a.current_step + 1} ({a.get_multiplier()}x)</p>
     </div>
     
     <div class="box">
-      <h2>🎯 Last 20 Numbers</h2>
-      <p class="nums">{last_nums}</p>
+      <h2>🔥 Hot Bots ({HOT_STREAK}+ Win Streak)</h2>
+      <p class="hot">{hot_str}</p>
     </div>
     
     <div class="box">
-      <h2>📊 Number Frequency</h2>
-      <p>{freq_str}</p>
-    </div>
-    
-    <div class="box">
-      <h2>🎲 Pattern Statistics</h2>
+      <h2>🏆 Bot Leaderboard (by Streak)</h2>
       <table>
-        <tr><th>Pattern</th><th>Count</th><th>WR</th></tr>
-        {pat_rows}
+        <tr><th>Bot</th><th>W</th><th>L</th><th>WR</th><th>Streak</th></tr>
+        {bot_rows}
       </table>
     </div>
     
     <div class="box">
       <h2>📅 Last Period</h2>
       <p>{a.last_period} → Number: {a.last_number} → {a.last_result}</p>
-      <p>Signal Source: {a.last_triggered_reason}</p>
+      <p>Signal: {a.last_signal} | Reason: {a.last_reason}</p>
     </div>
     </body></html>
     """
 
-@app.route('/api/stats')
-def api_stats():
-    global global_agent
-    a = global_agent
-    if not a: return jsonify({"error": "not ready"})
-    total = a.total_wins + a.total_losses
-    return jsonify({
-        "wr": (a.total_wins/total*100) if total else 0,
-        "win3": a.get_win3_rate(),
-        "wins": a.total_wins,
-        "losses": a.total_losses,
-        "signals": a.total_signals,
-        "skips": a.total_skips,
-        "step": a.current_step,
-    })
-
 
 # ==========================================
-# 🎯 NUMBER PATTERN ENGINE v3.0
+# 🎯 ENGINE v2.0
 # ==========================================
-class NumberPatternEngineV3:
+class AntiStreakEngineV2:
     def __init__(self):
         global global_agent
         global_agent = self
@@ -121,30 +97,32 @@ class NumberPatternEngineV3:
         
         self.current_step = 0
         self.active_prediction = None
-        self.active_patterns_used = []
         self.is_paused = False
         self.last_period = "None"
         self.last_number = 0
         self.last_result = "None"
-        self.last_triggered_reason = "None"
+        self.last_signal = "None"
+        self.last_reason = "None"
         
         self.total_signals = 0
         self.total_wins = 0
         self.total_losses = 0
         self.total_skips = 0
-        self.consecutive_losses = 0
         self.win_by_step = {0: 0, 1: 0, 2: 0, 3: 0}
         
-        self.pattern_stats = Counter()
-        
-        # 🆕 Pattern WR default 60%
-        self.pattern_wr = defaultdict(lambda: 0.60)
-        self.pattern_win = defaultdict(int)
-        self.pattern_total = defaultdict(int)
-        
-        self.transition_matrix = defaultdict(lambda: defaultdict(int))
-        
-        self.number_freq = Counter()
+        self.num_bots = 50
+        self.bot_stats = {}
+        for i in range(1, 51):
+            b_id = f"Bot_{i}"
+            self.bot_stats[b_id] = {
+                "wins": 0,
+                "losses": 0,
+                "wr": 0.0,
+                "win_streak": 0,
+                "loss_streak": 0,
+                "max_win_streak": 0,
+                "last_pred": None,
+            }
     
     def get_multiplier(self):
         return 2 ** self.current_step
@@ -158,279 +136,323 @@ class NumberPatternEngineV3:
         except Exception as e:
             print(f"❌ TG Err: {e}", flush=True)
     
-    def update_pattern_wr(self, actual):
-        for pat_name, pat_sig in self.active_patterns_used:
-            self.pattern_total[pat_name] += 1
-            if pat_sig == actual:
-                self.pattern_win[pat_name] += 1
-            
-            total = self.pattern_total[pat_name]
-            if total > 0:
-                self.pattern_wr[pat_name] = self.pattern_win[pat_name] / total
-    
     # =========================================================
-    # 🎯 PATTERNS 1-10
+    # 50 BOT STRATEGIES
     # =========================================================
-    def pattern_odd_even(self, nums):
-        if len(nums) < 5: return None, 0, "odd_even"
-        last5 = nums[-5:]
-        odds = sum(1 for x in last5 if x % 2 == 1)
-        evens = 5 - odds
-        if odds >= 4:
-            self.pattern_stats["odd_4+"] += 1
-            return "Small", 72, "odd_even"
-        if evens >= 4:
-            self.pattern_stats["even_4+"] += 1
-            return "Big", 72, "odd_even"
-        return None, 0, "odd_even"
-    
-    def pattern_high_low(self, nums):
-        if len(nums) < 5: return None, 0, "high_low"
-        last5 = nums[-5:]
-        highs = sum(1 for x in last5 if x >= 5)
-        if highs >= 4:
-            self.pattern_stats["high_4+"] += 1
-            return "Small", 78, "high_low"
-        if highs <= 1:
-            self.pattern_stats["low_4+"] += 1
-            return "Big", 78, "high_low"
-        return None, 0, "high_low"
-    
-    def pattern_number_repeat(self, nums):
-        if len(nums) < 3: return None, 0, "repeat"
-        last = nums[-1]
-        repeat = 1
-        for x in reversed(nums[:-1]):
-            if x == last: repeat += 1
-            else: break
-        if repeat >= 3:
-            self.pattern_stats[f"repeat_{last}"] += 1
-            if last >= 5:
-                return "Small", 82, "repeat"
-            else:
-                return "Big", 82, "repeat"
-        return None, 0, "repeat"
-    
-    def pattern_number_pair(self, nums):
-        if len(nums) < 15: return None, 0, "pair"
-        last2 = tuple(nums[-2:])
-        next_after = []
-        for i in range(len(nums) - 3):
-            if tuple(nums[i:i+2]) == last2:
-                next_after.append(nums[i+2])
-        if len(next_after) < 3: return None, 0, "pair"
-        counter = Counter(next_after)
-        most_common, count = counter.most_common(1)[0]
-        if count / len(next_after) >= 0.60:
-            self.pattern_stats["pair_markov"] += 1
-            if most_common >= 5:
-                return "Big", 78, "pair"
-            else:
-                return "Small", 78, "pair"
-        return None, 0, "pair"
-    
-    def pattern_sum_analysis(self, nums):
-        if len(nums) < 5: return None, 0, "sum"
-        s = sum(nums[-5:])
-        if s >= 32:
-            self.pattern_stats["sum_high"] += 1
-            return "Small", 76, "sum"
-        if s <= 13:
-            self.pattern_stats["sum_low"] += 1
-            return "Big", 76, "sum"
-        return None, 0, "sum"
-    
-    def pattern_distance(self, nums):
-        if len(nums) < 6: return None, 0, "distance"
-        distances = [abs(nums[i] - nums[i+1]) for i in range(-5, -1)]
-        avg_dist = sum(distances) / len(distances)
-        if avg_dist <= 2:
-            if nums[-1] >= 5:
-                return "Small", 72, "distance"
-            else:
-                return "Big", 72, "distance"
-        if avg_dist >= 6:
-            return "Big" if nums[-1] < 5 else "Small", 72, "distance"
-        return None, 0, "distance"
-    
-    def pattern_zone(self, nums):
-        if len(nums) < 10: return None, 0, "zone"
-        last10 = nums[-10:]
-        zone_a = sum(1 for x in last10 if x <= 4)
-        zone_b = 10 - zone_a
-        if zone_b >= 8:
-            self.pattern_stats["zone_b_8+"] += 1
-            return "Small", 88, "zone"
-        if zone_a >= 8:
-            self.pattern_stats["zone_a_8+"] += 1
-            return "Big", 88, "zone"
-        return None, 0, "zone"
-    
-    def pattern_bs_streak(self, nums):
-        if len(nums) < 5: return None, 0, "bs_streak"
-        bs = ["Big" if n >= 5 else "Small" for n in nums]
-        streak = 1
-        for x in reversed(bs[:-1]):
-            if x == bs[-1]: streak += 1
-            else: break
-        if streak >= 6:
-            self.pattern_stats["bs_continue_6+"] += 1
-            return bs[-1], 88, "bs_streak"
-        if streak == 4:
-            self.pattern_stats["bs_reverse_4"] += 1
-            return "Small" if bs[-1] == "Big" else "Big", 80, "bs_streak"
-        return None, 0, "bs_streak"
-    
-    def pattern_transition(self, nums):
-        if len(nums) < 30: return None, 0, "transition"
-        for i in range(len(nums) - 1):
-            self.transition_matrix[nums[i]][nums[i+1]] += 1
-        last = nums[-1]
-        next_counts = self.transition_matrix[last]
-        if not next_counts or sum(next_counts.values()) < 5:
-            return None, 0, "transition"
-        big_votes = sum(c for n, c in next_counts.items() if n >= 5)
-        small_votes = sum(c for n, c in next_counts.items() if n < 5)
-        total = big_votes + small_votes
-        if total == 0: return None, 0, "transition"
-        big_pct = big_votes / total
-        if big_pct >= 0.70:
-            self.pattern_stats["transition_big"] += 1
-            return "Big", min(big_pct * 100, 90), "transition"
-        elif big_pct <= 0.30:
-            self.pattern_stats["transition_small"] += 1
-            return "Small", min((1 - big_pct) * 100, 90), "transition"
-        return None, 0, "transition"
-    
-    def pattern_frequency(self, nums):
-        if len(nums) < 30: return None, 0, "frequency"
-        recent100 = nums[-100:] if len(nums) >= 100 else nums
-        freq = Counter(recent100)
+    def run_bot(self, bot_idx, arr):
+        n = len(arr)
+        if n < 15: return None
         
-        rare_big = sum(1 for n in range(5, 10) if freq.get(n, 0) < 8)
-        rare_small = sum(1 for n in range(0, 5) if freq.get(n, 0) < 8)
-        common_big = sum(1 for n in range(5, 10) if freq.get(n, 0) > 13)
-        common_small = sum(1 for n in range(0, 5) if freq.get(n, 0) > 13)
+        idx = (bot_idx - 1) % 50
         
-        if rare_big >= 3:
-            self.pattern_stats["freq_rare_big"] += 1
-            return "Big", 78, "frequency"
-        if rare_small >= 3:
-            self.pattern_stats["freq_rare_small"] += 1
-            return "Small", 78, "frequency"
-        if common_big >= 4:
-            self.pattern_stats["freq_common_big"] += 1
-            return "Big", 76, "frequency"
-        if common_small >= 4:
-            self.pattern_stats["freq_common_small"] += 1
-            return "Small", 76, "frequency"
-        return None, 0, "frequency"
-    
-    # =========================================================
-    # 🆕 TOP NUMBERS
-    # =========================================================
-    def get_top_numbers(self, nums, signal, top_n=3):
-        if signal == "Big":
-            candidates = [5, 6, 7, 8, 9]
+        # Trend (0-9)
+        if idx == 0: return arr[-1]
+        elif idx == 1: return "Small" if arr[-1]=="Big" else "Big"
+        elif idx == 2: return "Big" if arr[-3:].count("Big")>=2 else "Small"
+        elif idx == 3: return "Small" if arr[-3:].count("Big")>=2 else "Big"
+        elif idx == 4: return "Big" if arr[-5:].count("Big")>=3 else "Small"
+        elif idx == 5: return "Small" if arr[-5:].count("Big")>=3 else "Big"
+        elif idx == 6:
+            s=1
+            for x in reversed(arr[:-1]):
+                if x==arr[-1]: s+=1
+                else: break
+            return arr[-1] if s>=2 else ("Small" if arr[-1]=="Big" else "Big")
+        elif idx == 7:
+            s=1
+            for x in reversed(arr[:-1]):
+                if x==arr[-1]: s+=1
+                else: break
+            return ("Small" if arr[-1]=="Big" else "Big") if s>=2 else arr[-1]
+        elif idx == 8:
+            b=sum(1 for x in arr[-7:] if x=="Big")
+            return "Big" if b>=4 else "Small"
+        elif idx == 9:
+            b=sum(1 for x in arr[-10:] if x=="Big")
+            return "Big" if b>=6 else "Small"
+        
+        # Markov (10-19)
+        elif idx == 10:
+            last=arr[-1]
+            nxt=[arr[i+1] for i in range(n-1) if arr[i]==last]
+            if len(nxt)>=3: return Counter(nxt).most_common(1)[0][0]
+            return None
+        elif idx == 11:
+            if n<20: return None
+            p=tuple(arr[-2:])
+            nxt=[arr[i+2] for i in range(n-2) if tuple(arr[i:i+2])==p]
+            if len(nxt)>=3: return Counter(nxt).most_common(1)[0][0]
+            return None
+        elif idx == 12:
+            if n<25: return None
+            p=tuple(arr[-3:])
+            nxt=[arr[i+3] for i in range(n-3) if tuple(arr[i:i+3])==p]
+            if len(nxt)>=2: return Counter(nxt).most_common(1)[0][0]
+            return None
+        elif idx == 13:
+            if n<30: return None
+            p=tuple(arr[-4:])
+            nxt=[arr[i+4] for i in range(n-4) if tuple(arr[i:i+4])==p]
+            if len(nxt)>=2: return Counter(nxt).most_common(1)[0][0]
+            return None
+        elif idx == 14:
+            alt=sum(1 for i in range(-6,-1) if arr[i]!=arr[i+1])
+            if alt>=5: return "Small" if arr[-1]=="Big" else "Big"
+            return None
+        elif idx == 15:
+            if arr[-2:]==["Big","Big"]:
+                s=[arr[i+2] for i in range(n-2) if arr[i:i+2]==["Big","Big"]]
+                if s: return Counter(s).most_common(1)[0][0]
+            return None
+        elif idx == 16:
+            if arr[-2:]==["Small","Small"]:
+                b=[arr[i+2] for i in range(n-2) if arr[i:i+2]==["Small","Small"]]
+                if b: return Counter(b).most_common(1)[0][0]
+            return None
+        elif idx == 17:
+            last=arr[-1]; gap=1
+            for x in reversed(arr[:-1]):
+                if x==last: gap+=1
+                else: break
+            if gap>=4: return "Small" if last=="Big" else "Big"
+            return None
+        elif idx == 18:
+            b=arr[-20:].count("Big")
+            if b>=13: return "Small"
+            if b<=7: return "Big"
+            return None
+        elif idx == 19:
+            b=arr[-30:].count("Big") if n>=30 else arr.count("Big")
+            if b>=18: return "Small"
+            if b<=12: return "Big"
+            return None
+        
+        # Statistical (20-29)
+        elif idx == 20:
+            b=arr[-10:].count("Big")+1
+            s=arr[-10:].count("Small")+1
+            p=b/(b+s)
+            if p>=0.65: return "Big"
+            if p<=0.35: return "Small"
+            return None
+        elif idx == 21:
+            if n<20: return None
+            b=arr[-20:].count("Big")+1
+            s=arr[-20:].count("Small")+1
+            p=b/(b+s)
+            if p>=0.62: return "Big"
+            if p<=0.38: return "Small"
+            return None
+        elif idx == 22:
+            b=arr[-15:].count("Big") if n>=15 else arr.count("Big")
+            if b>=11: return "Small"
+            if b<=4: return "Big"
+            return None
+        elif idx == 23:
+            bb=sum(1 for i in range(-15,0) if arr[i]=="Big" and arr[i+1]=="Big")
+            if bb>=6: return "Small"
+            return None
+        elif idx == 24:
+            ss=sum(1 for i in range(-15,0) if arr[i]=="Small" and arr[i+1]=="Small")
+            if ss>=6: return "Big"
+            return None
+        elif idx == 25:
+            s=1
+            for x in reversed(arr[:-1]):
+                if x==arr[-1]: s+=1
+                else: break
+            if s==3: return "Small" if arr[-1]=="Big" else "Big"
+            return None
+        elif idx == 26:
+            s=1
+            for x in reversed(arr[:-1]):
+                if x==arr[-1]: s+=1
+                else: break
+            if s==4: return "Small" if arr[-1]=="Big" else "Big"
+            return None
+        elif idx == 27:
+            if n<15: return None
+            f5=arr[-10:-5].count("Big"); l5=arr[-5:].count("Big")
+            if f5<=1 and l5>=3: return "Big"
+            if f5>=3 and l5<=1: return "Small"
+            return None
+        elif idx == 28:
+            if n<20: return None
+            b10=arr[-10:].count("Big"); b20=arr[-20:].count("Big")
+            if b10>b20*0.6: return "Big"
+            if b10<b20*0.4: return "Small"
+            return None
+        elif idx == 29:
+            b=arr[-25:].count("Big") if n>=25 else arr.count("Big")
+            tn=min(25,n)
+            if b>=tn-3: return "Small"
+            if b<=3: return "Big"
+            return None
+        
+        # Pattern (30-39)
+        elif idx == 30:
+            if arr[-3:]==["Big","Small","Small"]: return "Big"
+            return None
+        elif idx == 31:
+            if arr[-3:]==["Small","Big","Big"]: return "Small"
+            return None
+        elif idx == 32:
+            if arr[-3:]==["Big","Small","Big"]: return "Small"
+            return None
+        elif idx == 33:
+            if arr[-3:]==["Small","Big","Small"]: return "Big"
+            return None
+        elif idx == 34:
+            if arr[-4:]==["Big","Big","Small","Big"]: return "Small"
+            return None
+        elif idx == 35:
+            if arr[-4:]==["Small","Small","Big","Small"]: return "Big"
+            return None
+        elif idx == 36:
+            l5=arr[-5:]
+            if l5[:2]==l5[-2:][::-1]:
+                return "Small" if l5[-1]=="Big" else "Big"
+            return None
+        elif idx == 37:
+            if n<6: return None
+            bl=[arr[-6:-4],arr[-4:-2],arr[-2:]]
+            if bl[0]==bl[2] and bl[0]!=bl[1]:
+                return bl[0][0]
+            return None
+        elif idx == 38:
+            sc=0
+            for i,x in enumerate(arr[-10:]):
+                w=1+(i/10)
+                sc+=w if x=="Big" else -w
+            if sc>2: return "Big"
+            if sc<-2: return "Small"
+            return None
+        elif idx == 39:
+            if n<20: return None
+            l5=arr[-5:].count("Big"); l20=arr[-20:].count("Big")
+            if l5>=4 and l20<=8: return "Big"
+            if l5<=1 and l20>=12: return "Small"
+            return None
+        
+        # Adaptive (40-49)
+        elif idx == 40: return "Big" if arr.count("Big")>=n/2 else "Small"
+        elif idx == 41: return "Small" if arr.count("Big")>=n/2 else "Big"
+        elif idx == 42: return arr[-1]
+        elif idx == 43: return "Small" if arr[-1]=="Big" else "Big"
+        elif idx == 44:
+            b=arr[:10].count("Big") if n>=10 else arr.count("Big")
+            return "Big" if b>=5 else "Small"
+        elif idx == 45: return arr[-2] if n>=2 else "Big"
+        elif idx == 46: return "Small" if arr[-2]=="Big" else "Big" if n>=2 else "Small"
+        elif idx == 47: return arr[-3] if n>=3 else "Big"
+        elif idx == 48: return "Small" if arr[-4]=="Big" else "Big" if n>=4 else "Small"
         else:
-            candidates = [0, 1, 2, 3, 4]
-        
-        if len(nums) < 30:
-            if signal == "Big":
-                default = [(7, 30), (8, 25), (6, 22), (5, 13), (9, 10)]
-            else:
-                default = [(2, 30), (3, 25), (1, 22), (4, 13), (0, 10)]
-            return default[:top_n]
-        
-        recent = nums[-100:] if len(nums) >= 100 else nums
-        freq = Counter(recent)
-        candidate_total = sum(freq.get(n, 0) for n in candidates)
-        
-        if candidate_total == 0:
-            if signal == "Big":
-                return [(7, 30), (8, 25), (6, 22)][:top_n]
-            else:
-                return [(2, 30), (3, 25), (1, 22)][:top_n]
-        
-        probs = []
-        for n in candidates:
-            count = freq.get(n, 0)
-            prob = (count / candidate_total) * 100
-            probs.append((n, prob))
-        
-        probs.sort(key=lambda x: x[1], reverse=True)
-        
-        result = []
-        for n, p in probs[:top_n]:
-            result.append((n, max(p, 5)))
-        
-        return result
+            bigs=sum(1 for s in self.bot_stats.values() if s.get("last_pred")=="Big")
+            return "Small" if bigs>=25 else "Big"
     
     # =========================================================
-    # 🎯 MAIN SIGNAL GENERATOR (v3.0)
+    # UPDATE BOT STATS
     # =========================================================
-    def generate_signal(self, nums):
-        patterns = [
-            self.pattern_odd_even(nums),
-            self.pattern_high_low(nums),
-            self.pattern_number_repeat(nums),
-            self.pattern_number_pair(nums),
-            self.pattern_sum_analysis(nums),
-            self.pattern_distance(nums),
-            self.pattern_zone(nums),
-            self.pattern_bs_streak(nums),
-            self.pattern_transition(nums),
-            self.pattern_frequency(nums),
-        ]
+    def update_bot_stats(self, actual):
+        for b_id, stats in self.bot_stats.items():
+            pred = stats.get("last_pred")
+            if not pred: continue
+            
+            if pred == actual:
+                stats["wins"] += 1
+                stats["win_streak"] += 1
+                stats["loss_streak"] = 0
+                if stats["win_streak"] > stats["max_win_streak"]:
+                    stats["max_win_streak"] = stats["win_streak"]
+            else:
+                stats["losses"] += 1
+                stats["loss_streak"] += 1
+                stats["win_streak"] = 0
+            
+            t = stats["wins"] + stats["losses"]
+            stats["wr"] = stats["wins"] / t if t > 0 else 0.0
+    
+    # =========================================================
+    # STREAK WEIGHT
+    # =========================================================
+    def get_streak_weight(self, streak):
+        if streak >= 8: return 3.0
+        if streak >= 7: return 2.0
+        if streak >= 6: return 1.5
+        return 1.0
+    
+    # =========================================================
+    # 🎯 SIGNAL GENERATOR v2.0
+    # =========================================================
+    def generate_signal(self, arr):
+        """
+        1. Bot 50 run
+        2. Hot Bots (4+ streak) ရှာ
+        3. Hot Bot မရှိရင် → SKIP
+        4. Reverse Vote (Streak Weight)
+        5. Confidence 66%+ မှ Signal
+        6. Tie Breaker (အမြင့်ဆုံး Streak)
+        """
         
-        # 🆕 SOLO MODE — Pattern 1 ခု 88%+ + WR 60%+
-        for sig, conf, pat_name in patterns:
-            if sig is None: continue
-            if conf >= 88 and self.pattern_wr[pat_name] >= 0.60:
-                return sig, conf, f"Solo {pat_name} ({conf:.0f}%)", [(pat_name, sig)]
+        # 1) Bot 50 run
+        for i in range(1, 51):
+            b_id = f"Bot_{i}"
+            pred = self.run_bot(i, arr)
+            if pred:
+                self.bot_stats[b_id]["last_pred"] = pred
         
-        # Weighted Vote
+        # 2) Hot Bots ရှာ
+        hot_bots = []
+        for b_id, stats in self.bot_stats.items():
+            if stats["win_streak"] >= HOT_STREAK:
+                last_pred = stats.get("last_pred")
+                if last_pred:
+                    reversed_sig = "Small" if last_pred == "Big" else "Big"
+                    hot_bots.append({
+                        "bot": b_id,
+                        "streak": stats["win_streak"],
+                        "original": last_pred,
+                        "reversed": reversed_sig,
+                        "weight": self.get_streak_weight(stats["win_streak"])
+                    })
+        
+        # 3) Hot Bot မရှိရင် SKIP
+        if not hot_bots:
+            return None, 0, f"No hot bot (need {HOT_STREAK}+ streak)", 0
+        
+        # 4) Weighted Reverse Vote
         big_score = 0.0
         small_score = 0.0
-        patterns_used = []
-        
-        for sig, conf, pat_name in patterns:
-            if sig is None: continue
-            
-            pat_wr = self.pattern_wr[pat_name]
-            wr_weight = 0.5 + pat_wr
-            base_weight = conf / 100.0
-            final_weight = base_weight * wr_weight
-            
-            if sig == "Big":
-                big_score += final_weight
+        for h in hot_bots:
+            if h["reversed"] == "Big":
+                big_score += h["weight"]
             else:
-                small_score += final_weight
-            
-            patterns_used.append((pat_name, sig))
+                small_score += h["weight"]
         
-        total = big_score + small_score
-        if total < 0.5:
-            return None, 0, "No pattern", []
+        total_score = big_score + small_score
+        if total_score == 0:
+            return None, 0, "No score", len(hot_bots)
         
-        big_pct = big_score / total
+        big_pct = big_score / total_score
+        conf = max(big_pct, 1 - big_pct) * 100
         
-        # 🆕 TRIPLE CONFIRMATION
-        big_count = sum(1 for _, sig in patterns_used if sig == "Big")
-        small_count = sum(1 for _, sig in patterns_used if sig == "Small")
+        # 5) Confidence Threshold 66%
+        if conf < MIN_CONFIDENCE:
+            return None, conf, f"Weak ({conf:.0f}% < {MIN_CONFIDENCE}%)", len(hot_bots)
         
-        if big_count >= 3 and small_count == 0:
-            return "Big", 95, f"Triple Confirm ({big_count}x)", patterns_used
-        if small_count >= 3 and big_count == 0:
-            return "Small", 95, f"Triple Confirm ({small_count}x)", patterns_used
+        # 6) Signal
+        if big_pct >= 0.5:
+            final_signal = "Big"
+        else:
+            final_signal = "Small"
         
-        # 🆕 Threshold 85% (STRICT)
-        if big_pct >= 0.85:
-            return "Big", big_pct * 100, f"High Conf ({big_pct*100:.0f}%)", patterns_used
-        elif big_pct <= 0.15:
-            return "Small", (1 - big_pct) * 100, f"High Conf ({(1-big_pct)*100:.0f}%)", patterns_used
+        # Tie Breaker — ရှိရင် အမြင့်ဆုံး streak ရဲ့ Reverse
+        if abs(big_pct - 0.5) < 0.01:  # Tie
+            hot_sorted = sorted(hot_bots, key=lambda x: x["streak"], reverse=True)
+            final_signal = hot_sorted[0]["reversed"]
         
-        return None, 0, f"Low conf ({big_pct*100:.0f}%)", patterns_used
+        reason = f"🔥 Reverse {len(hot_bots)} Hot Bot(s) [{conf:.0f}%]"
+        return final_signal, conf, reason, len(hot_bots)
     
     # =========================================================
     # 🎯 ANALYZE ROUND
@@ -445,72 +467,67 @@ class NumberPatternEngineV3:
         
         short = "..." + str(period)[-3:]
         
+        # 1) Evaluate
         if self.active_prediction:
             win = (self.active_prediction == current_result)
-            self.update_pattern_wr(current_result)
             
             if win:
                 self.total_wins += 1
                 step_key = min(self.current_step, 3)
                 self.win_by_step[step_key] += 1
-                self.consecutive_losses = 0
                 self.current_step = 0
                 
                 self.send_telegram(
-                    f"✅ <b>WIN at Step {self.current_step+1 if False else step_key+1}</b>\n"
+                    f"✅ <b>WIN</b>\n"
                     f"🔢 Number: {number} ({current_result})\n"
                     f"📊 WR: {self.get_wr():.1f}% | Win3: {self.get_win3_rate():.1f}%"
                 )
             else:
                 self.total_losses += 1
                 self.current_step += 1
-                self.consecutive_losses += 1
                 
-                # 🆕 Step 3+ Alert (Martingale မထိ)
                 if self.current_step >= 3:
                     self.send_telegram(
-                        f"⚠️ <b>Step {self.current_step+1} ({self.get_multiplier()}x)</b>\n"
-                        f"Continuing to win..."
+                        f"⚠️ <b>Step {self.current_step+1} ({self.get_multiplier()}x)</b>"
                     )
             
             self.active_prediction = None
-            self.active_patterns_used = []
+        
+        # 2) Update Bot Stats (previous round)
+        if len(self.number_window) > 0:
+            last_bs = "Big" if self.number_window[-1] >= 5 else "Small"
+            self.update_bot_stats(last_bs)
         
         self.number_window.append(number)
-        self.number_freq[number] += 1
         
-        if len(self.number_window) < 10:
-            self.send_telegram(f"⏳ Warm-up {short} ({len(self.number_window)}/10)")
+        # 3) Warm-up
+        if len(self.number_window) < 20:
+            self.send_telegram(f"⏳ Warm-up {short} ({len(self.number_window)}/20)")
             return
         
-        nums = list(self.number_window)
-        signal, conf, reason, patterns_used = self.generate_signal(nums)
+        # 4) Signal
+        arr = ["Big" if n >= 5 else "Small" for n in self.number_window]
+        signal, conf, reason, hot_count = self.generate_signal(arr)
         
+        self.last_signal = signal if signal else "SKIP"
+        self.last_reason = reason
+        
+        # 5) Skip
         if signal is None:
             self.total_skips += 1
             self.send_telegram(f"⏸️ <b>SKIP</b> {short}\nReason: {reason}")
             return
         
-        # Top 3 Numbers
-        top_numbers = self.get_top_numbers(nums, signal, top_n=3)
-        top_str = "\n".join([
-            f"   {i+1}️⃣ <b>{num}</b> ({prob:.0f}%)"
-            for i, (num, prob) in enumerate(top_numbers)
-        ])
-        
+        # 6) Signal
         self.active_prediction = signal
-        self.active_patterns_used = patterns_used
         self.total_signals += 1
-        self.last_triggered_reason = reason
         
         stars = "⭐" * min(int(conf / 20), 5)
         self.send_telegram(
-            f"🔢 <b>NUMBER BOT v3.0 SIGNAL</b> {stars}\n"
+            f"🔥 <b>ANTI-STREAK REVERSE SIGNAL</b> {stars}\n"
             f"📅 Period: {short}\n"
             f"📌 {reason}\n"
-            f"🎯 <b>{signal.upper()}</b>\n\n"
-            f"📊 <b>Top 3 Numbers:</b>\n"
-            f"{top_str}\n\n"
+            f"🎯 <b>{signal.upper()}</b>\n"
             f"💰 Step {self.current_step+1} ({self.get_multiplier()}x)\n"
             f"📊 WR: {self.get_wr():.1f}% | Win3: {self.get_win3_rate():.1f}%"
         )
@@ -527,7 +544,7 @@ class NumberPatternEngineV3:
 
 
 # ==========================================
-# 📱 TELEGRAM COMMANDS
+# TELEGRAM COMMANDS
 # ==========================================
 def poll_telegram(agent):
     try:
@@ -552,14 +569,25 @@ def poll_telegram(agent):
                     
                     if txt == "/status":
                         agent.send_telegram(
-                            f"📊 <b>NUMBER BOT v3.0 STATUS</b>\n\n"
+                            f"📊 <b>ANTI-STREAK v2.0 STATUS</b>\n\n"
                             f"⚙️ {'PAUSED 🛑' if agent.is_paused else 'RUNNING 🟢'}\n"
                             f"Signals: {agent.total_signals} | Skips: {agent.total_skips}\n"
                             f"✅ W: {agent.total_wins} | ❌ L: {agent.total_losses}\n"
                             f"📈 WR: {agent.get_wr():.2f}%\n"
                             f"🎯 Win3: {agent.get_win3_rate():.1f}%\n"
-                            f"💰 Step: {agent.current_step+1} ({agent.get_multiplier()}x)"
+                            f"🎚️ Streak Threshold: {HOT_STREAK}+"
                         )
+                    elif txt == "/hot":
+                        hot = [(b, s) for b, s in agent.bot_stats.items() if s["win_streak"] >= HOT_STREAK]
+                        if hot:
+                            s = "\n".join([f"🔥 {b}: {st['win_streak']} wins (pred: {st['last_pred']})" for b, st in hot])
+                        else:
+                            s = f"No hot bots (need {HOT_STREAK}+ streak)"
+                        agent.send_telegram(f"🔥 <b>Hot Bots</b>\n{s}")
+                    elif txt == "/top":
+                        top = sorted(agent.bot_stats.items(), key=lambda x: x[1]["win_streak"], reverse=True)[:10]
+                        s = "\n".join([f"{b}: streak {st['win_streak']} ({st['wins']}W)" for b, st in top])
+                        agent.send_telegram(f"🏆 <b>Top 10 (by streak)</b>\n{s}")
                     elif txt == "/pause":
                         agent.is_paused = True
                         agent.send_telegram("🛑 Paused")
@@ -568,20 +596,13 @@ def poll_telegram(agent):
                         agent.send_telegram("🟢 Resumed")
                     elif txt == "/reset":
                         agent.current_step = 0
-                        agent.consecutive_losses = 0
                         agent.send_telegram("🔄 Step reset")
-                    elif txt == "/patterns":
-                        top = sorted(agent.pattern_wr.items(), key=lambda x: x[1], reverse=True)
-                        s = "\n".join([
-                            f"{name}: {wr*100:.0f}% ({agent.pattern_total[name]}x)"
-                            for name, wr in top[:10]
-                        ])
-                        agent.send_telegram(f"🎯 <b>Pattern WR</b>\n{s}")
                     elif txt == "/help":
                         agent.send_telegram(
                             "🤖 <b>Commands</b>\n"
                             "/status - Stats\n"
-                            "/patterns - Pattern WR\n"
+                            f"/hot - Hot bots ({HOT_STREAK}+ streak)\n"
+                            "/top - Top 10\n"
                             "/pause - Pause\n"
                             "/resume - Resume\n"
                             "/reset - Reset step"
@@ -592,11 +613,11 @@ def poll_telegram(agent):
 
 
 # ==========================================
-# 🚀 MAIN LOOP
+# MAIN LOOP
 # ==========================================
 def run_bot():
-    print("🔢 Number Bot v3.0 (Triple Goal) starting...", flush=True)
-    agent = NumberPatternEngineV3()
+    print(f"🔥 Anti-Streak v2.0 starting (Streak: {HOT_STREAK}, Conf: {MIN_CONFIDENCE}%)...", flush=True)
+    agent = AntiStreakEngineV2()
     threading.Thread(target=poll_telegram, args=(agent,), daemon=True).start()
     
     last_period = ""
@@ -632,7 +653,7 @@ def run_bot():
                     
                     if period != last_period:
                         last_period = period
-                        print(f"🔢 Sync {period} → {number}", flush=True)
+                        print(f"🔥 Sync {period} → {number}", flush=True)
                         agent.analyze_round(period, number)
         except Exception as e:
             print(f"API Err: {e}", flush=True)
