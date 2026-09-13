@@ -12,8 +12,7 @@ CHAT_ID = "-1004402480797"
 app = Flask(__name__)
 global_agent = None
 
-HOT_STREAK = 4          # 4+ win streak = HOT
-MIN_CONFIDENCE = 66     # 66%+ vote လိုတယ်
+HOT_STREAK = 7          # Base threshold
 
 
 # ==========================================
@@ -23,7 +22,7 @@ MIN_CONFIDENCE = 66     # 66%+ vote လိုတယ်
 def home():
     global global_agent
     if not global_agent:
-        return "<h3>🔥 Step 1 Anti-Streak v2.0 starting...</h3>"
+        return "<h3>🔥 Max Streak Lock v2.6 starting...</h3>"
     
     a = global_agent
     total = a.total_wins + a.total_losses
@@ -32,27 +31,27 @@ def home():
     bot_rows = ""
     sorted_bots = sorted(a.bot_stats.items(), key=lambda x: x[1]["win_streak"], reverse=True)
     for b_id, s in sorted_bots[:20]:
-        streak_icon = "🔥" if s["win_streak"] >= HOT_STREAK else ("⚡" if s["win_streak"] >= 3 else "")
-        bot_rows += f"<tr><td>{b_id}</td><td>{s['wins']}</td><td>{s['losses']}</td><td>{s['wr']*100:.1f}%</td><td><b>{s['win_streak']}</b> {streak_icon}</td></tr>"
+        streak_icon = "🔥" if s["win_streak"] >= HOT_STREAK else ("⚡" if s["win_streak"] >= 4 else "")
+        lock_icon = "🔒" if b_id == a.locked_bot else ""
+        bot_rows += f"<tr><td>{b_id} {lock_icon}</td><td>{s['wins']}</td><td>{s['losses']}</td><td>{s['wr']*100:.1f}%</td><td><b>{s['win_streak']}</b> {streak_icon}</td></tr>"
     
-    hot_bots = [(b, s) for b, s in a.bot_stats.items() if s["win_streak"] >= HOT_STREAK]
-    hot_str = ", ".join([f"{b}({s['win_streak']})" for b, s in hot_bots]) if hot_bots else "None"
+    lock_status = f"🔒 {a.locked_bot} ({a.locked_streak}W)" if a.locked_bot else "None"
     
     return f"""
-    <html><head><title>Anti-Streak v2.0</title>
+    <html><head><title>Max Streak Lock v2.6</title>
     <meta http-equiv="refresh" content="15">
     <style>
     body{{background:#0a0e27;color:#0ff;font-family:monospace;padding:20px}}
     h1,h2{{color:#0ff;text-shadow:0 0 10px #0ff}}
     .box{{background:#1a1f3a;border:1px solid #0ff;padding:15px;margin:10px 0;border-radius:8px}}
     .big{{font-size:32px;color:#0f0;font-weight:bold}}
+    .lock{{font-size:24px;color:#f44;font-weight:bold}}
     table{{width:100%;border-collapse:collapse}}
     th,td{{padding:6px;border:1px solid #0ff;text-align:left;font-size:12px}}
     th{{background:#0ff;color:#000}}
-    .hot{{color:#f44;font-weight:bold}}
     </style></head><body>
-    <h1>🔥 STEP 1 ANTI-STREAK v2.0</h1>
-    <p>Streak Threshold: <b>{HOT_STREAK}+</b> | Confidence: <b>{MIN_CONFIDENCE}%+</b></p>
+    <h1>🔒 MAX STREAK LOCK v2.6</h1>
+    <p>Base Threshold: <b>{HOT_STREAK}+</b> Win Streak</p>
     
     <div class="box">
       <h2>📊 Performance</h2>
@@ -64,8 +63,8 @@ def home():
     </div>
     
     <div class="box">
-      <h2>🔥 Hot Bots ({HOT_STREAK}+ Win Streak)</h2>
-      <p class="hot">{hot_str}</p>
+      <h2>🔒 Current Lock</h2>
+      <p class="lock">{lock_status}</p>
     </div>
     
     <div class="box">
@@ -86,9 +85,9 @@ def home():
 
 
 # ==========================================
-# 🎯 ENGINE v2.0
+# 🎯 MAX STREAK LOCK ENGINE v2.6
 # ==========================================
-class AntiStreakEngineV2:
+class MaxStreakLockEngine:
     def __init__(self):
         global global_agent
         global_agent = self
@@ -109,6 +108,10 @@ class AntiStreakEngineV2:
         self.total_losses = 0
         self.total_skips = 0
         self.win_by_step = {0: 0, 1: 0, 2: 0, 3: 0}
+        
+        # 🆕 Max Streak Lock
+        self.locked_bot = None
+        self.locked_streak = 0
         
         self.num_bots = 50
         self.bot_stats = {}
@@ -373,25 +376,15 @@ class AntiStreakEngineV2:
             stats["wr"] = stats["wins"] / t if t > 0 else 0.0
     
     # =========================================================
-    # STREAK WEIGHT
-    # =========================================================
-    def get_streak_weight(self, streak):
-        if streak >= 8: return 3.0
-        if streak >= 7: return 2.0
-        if streak >= 6: return 1.5
-        return 1.0
-    
-    # =========================================================
-    # 🎯 SIGNAL GENERATOR v2.0
+    # 🎯 SIGNAL GENERATOR — Max Streak Lock
     # =========================================================
     def generate_signal(self, arr):
         """
-        1. Bot 50 run
-        2. Hot Bots (4+ streak) ရှာ
-        3. Hot Bot မရှိရင် → SKIP
-        4. Reverse Vote (Streak Weight)
-        5. Confidence 66%+ မှ Signal
-        6. Tie Breaker (အမြင့်ဆုံး Streak)
+        1. Lock ရှိရင် — Lock ဖြစ်တဲ့ Bot ရဲ့ Signal → Reverse
+        2. Lock မရှိရင် — 7+ bots ရှာ
+        3. Max Streak Bot 1 ကောင်ပဲ ရှိရင် → Lock
+        4. Tie ဖြစ်ရင် → စောင့်
+        5. 7+ မရှိရင် SKIP
         """
         
         # 1) Bot 50 run
@@ -401,7 +394,19 @@ class AntiStreakEngineV2:
             if pred:
                 self.bot_stats[b_id]["last_pred"] = pred
         
-        # 2) Hot Bots ရှာ
+        # 2) Lock ရှိလား?
+        if self.locked_bot:
+            locked_stats = self.bot_stats.get(self.locked_bot)
+            if locked_stats:
+                locked_pred = locked_stats.get("last_pred")
+                if locked_pred:
+                    reversed_sig = "Small" if locked_pred == "Big" else "Big"
+                    reason = f"🔒 {self.locked_bot} ({locked_stats['win_streak']}W) locked"
+                    return reversed_sig, 100, reason, 1
+                else:
+                    self.locked_bot = None
+        
+        # 3) 7+ Bots ရှာ
         hot_bots = []
         for b_id, stats in self.bot_stats.items():
             if stats["win_streak"] >= HOT_STREAK:
@@ -413,46 +418,29 @@ class AntiStreakEngineV2:
                         "streak": stats["win_streak"],
                         "original": last_pred,
                         "reversed": reversed_sig,
-                        "weight": self.get_streak_weight(stats["win_streak"])
                     })
         
-        # 3) Hot Bot မရှိရင် SKIP
+        # 4) 7+ မရှိရင် SKIP
         if not hot_bots:
             return None, 0, f"No hot bot (need {HOT_STREAK}+ streak)", 0
         
-        # 4) Weighted Reverse Vote
-        big_score = 0.0
-        small_score = 0.0
-        for h in hot_bots:
-            if h["reversed"] == "Big":
-                big_score += h["weight"]
-            else:
-                small_score += h["weight"]
+        # 5) Max Streak ရှာ
+        max_streak = max(h["streak"] for h in hot_bots)
+        top_bots = [h for h in hot_bots if h["streak"] == max_streak]
         
-        total_score = big_score + small_score
-        if total_score == 0:
-            return None, 0, "No score", len(hot_bots)
+        # 6) Tie ဖြစ်ရင် — စောင့်
+        if len(top_bots) > 1:
+            bots_str = ", ".join([f"{h['bot']}({h['streak']}W)" for h in top_bots[:5]])
+            reason = f"⏳ Tie at {max_streak}W: {bots_str} — waiting"
+            return None, 0, reason, len(top_bots)
         
-        big_pct = big_score / total_score
-        conf = max(big_pct, 1 - big_pct) * 100
+        # 7) Max Streak Bot 1 ကောင်ပဲ → Lock
+        top_bot = top_bots[0]
+        self.locked_bot = top_bot["bot"]
+        self.locked_streak = top_bot["streak"]
         
-        # 5) Confidence Threshold 66%
-        if conf < MIN_CONFIDENCE:
-            return None, conf, f"Weak ({conf:.0f}% < {MIN_CONFIDENCE}%)", len(hot_bots)
-        
-        # 6) Signal
-        if big_pct >= 0.5:
-            final_signal = "Big"
-        else:
-            final_signal = "Small"
-        
-        # Tie Breaker — ရှိရင် အမြင့်ဆုံး streak ရဲ့ Reverse
-        if abs(big_pct - 0.5) < 0.01:  # Tie
-            hot_sorted = sorted(hot_bots, key=lambda x: x["streak"], reverse=True)
-            final_signal = hot_sorted[0]["reversed"]
-        
-        reason = f"🔥 Reverse {len(hot_bots)} Hot Bot(s) [{conf:.0f}%]"
-        return final_signal, conf, reason, len(hot_bots)
+        reason = f"🔒 LOCK: {top_bot['bot']} ({top_bot['streak']}W) → Reverse"
+        return top_bot["reversed"], 100, reason, 1
     
     # =========================================================
     # 🎯 ANALYZE ROUND
@@ -477,8 +465,15 @@ class AntiStreakEngineV2:
                 self.win_by_step[step_key] += 1
                 self.current_step = 0
                 
+                # 🆕 Win ဖြစ်ရင် Lock ဖျက်
+                unlock_msg = ""
+                if self.locked_bot:
+                    unlock_msg = f"\n🔓 UNLOCK: {self.locked_bot}"
+                    self.locked_bot = None
+                    self.locked_streak = 0
+                
                 self.send_telegram(
-                    f"✅ <b>WIN</b>\n"
+                    f"✅ <b>WIN</b>{unlock_msg}\n"
                     f"🔢 Number: {number} ({current_result})\n"
                     f"📊 WR: {self.get_wr():.1f}% | Win3: {self.get_win3_rate():.1f}%"
                 )
@@ -486,9 +481,11 @@ class AntiStreakEngineV2:
                 self.total_losses += 1
                 self.current_step += 1
                 
+                # 🆕 Loss — Lock ဆက်ထား
                 if self.current_step >= 3:
                     self.send_telegram(
-                        f"⚠️ <b>Step {self.current_step+1} ({self.get_multiplier()}x)</b>"
+                        f"⚠️ <b>Step {self.current_step+1} ({self.get_multiplier()}x)</b>\n"
+                        f"🔒 Locked: {self.locked_bot}"
                     )
             
             self.active_prediction = None
@@ -524,7 +521,7 @@ class AntiStreakEngineV2:
         
         stars = "⭐" * min(int(conf / 20), 5)
         self.send_telegram(
-            f"🔥 <b>ANTI-STREAK REVERSE SIGNAL</b> {stars}\n"
+            f"🔥 <b>MAX STREAK SIGNAL</b> {stars}\n"
             f"📅 Period: {short}\n"
             f"📌 {reason}\n"
             f"🎯 <b>{signal.upper()}</b>\n"
@@ -568,26 +565,37 @@ def poll_telegram(agent):
                     if cid != CHAT_ID: continue
                     
                     if txt == "/status":
+                        lock_info = f"🔒 Locked: {agent.locked_bot} ({agent.locked_streak}W)" if agent.locked_bot else "🔓 No Lock"
                         agent.send_telegram(
-                            f"📊 <b>ANTI-STREAK v2.0 STATUS</b>\n\n"
+                            f"📊 <b>MAX STREAK LOCK STATUS</b>\n\n"
                             f"⚙️ {'PAUSED 🛑' if agent.is_paused else 'RUNNING 🟢'}\n"
                             f"Signals: {agent.total_signals} | Skips: {agent.total_skips}\n"
                             f"✅ W: {agent.total_wins} | ❌ L: {agent.total_losses}\n"
                             f"📈 WR: {agent.get_wr():.2f}%\n"
-                            f"🎯 Win3: {agent.get_win3_rate():.1f}%\n"
-                            f"🎚️ Streak Threshold: {HOT_STREAK}+"
+                            f"🎯 Win3: {agent.get_win3_rate():.1f}%\n\n"
+                            f"{lock_info}\n"
+                            f"🎚️ Base: {HOT_STREAK}+ Win Streak"
                         )
                     elif txt == "/hot":
                         hot = [(b, s) for b, s in agent.bot_stats.items() if s["win_streak"] >= HOT_STREAK]
                         if hot:
                             s = "\n".join([f"🔥 {b}: {st['win_streak']} wins (pred: {st['last_pred']})" for b, st in hot])
                         else:
-                            s = f"No hot bots (need {HOT_STREAK}+ streak)"
-                        agent.send_telegram(f"🔥 <b>Hot Bots</b>\n{s}")
+                            top = sorted(agent.bot_stats.items(), key=lambda x: x[1]["win_streak"], reverse=True)[:5]
+                            s = f"No hot bots yet. Top 5:\n"
+                            s += "\n".join([f"{b}: {st['win_streak']}/{HOT_STREAK}" for b, st in top])
+                        agent.send_telegram(f"🔥 <b>Hot Bots ({HOT_STREAK}+)</b>\n{s}")
                     elif txt == "/top":
                         top = sorted(agent.bot_stats.items(), key=lambda x: x[1]["win_streak"], reverse=True)[:10]
                         s = "\n".join([f"{b}: streak {st['win_streak']} ({st['wins']}W)" for b, st in top])
                         agent.send_telegram(f"🏆 <b>Top 10 (by streak)</b>\n{s}")
+                    elif txt == "/lock":
+                        if agent.locked_bot:
+                            stats = agent.bot_stats[agent.locked_bot]
+                            s = f"🔒 Locked: {agent.locked_bot}\nStreak: {stats['win_streak']}\nPred: {stats['last_pred']}"
+                        else:
+                            s = "🔓 No bot locked"
+                        agent.send_telegram(s)
                     elif txt == "/pause":
                         agent.is_paused = True
                         agent.send_telegram("🛑 Paused")
@@ -597,12 +605,22 @@ def poll_telegram(agent):
                     elif txt == "/reset":
                         agent.current_step = 0
                         agent.send_telegram("🔄 Step reset")
+                    elif txt == "/unlock":
+                        if agent.locked_bot:
+                            old = agent.locked_bot
+                            agent.locked_bot = None
+                            agent.locked_streak = 0
+                            agent.send_telegram(f"🔓 Manually unlocked: {old}")
+                        else:
+                            agent.send_telegram("🔓 No lock to unlock")
                     elif txt == "/help":
                         agent.send_telegram(
                             "🤖 <b>Commands</b>\n"
                             "/status - Stats\n"
-                            f"/hot - Hot bots ({HOT_STREAK}+ streak)\n"
+                            f"/hot - Hot bots ({HOT_STREAK}+)\n"
                             "/top - Top 10\n"
+                            "/lock - Current lock info\n"
+                            "/unlock - Manual unlock\n"
                             "/pause - Pause\n"
                             "/resume - Resume\n"
                             "/reset - Reset step"
@@ -616,8 +634,8 @@ def poll_telegram(agent):
 # MAIN LOOP
 # ==========================================
 def run_bot():
-    print(f"🔥 Anti-Streak v2.0 starting (Streak: {HOT_STREAK}, Conf: {MIN_CONFIDENCE}%)...", flush=True)
-    agent = AntiStreakEngineV2()
+    print(f"🔒 Max Streak Lock v2.6 starting (Base: {HOT_STREAK}+)...", flush=True)
+    agent = MaxStreakLockEngine()
     threading.Thread(target=poll_telegram, args=(agent,), daemon=True).start()
     
     last_period = ""
@@ -653,7 +671,7 @@ def run_bot():
                     
                     if period != last_period:
                         last_period = period
-                        print(f"🔥 Sync {period} → {number}", flush=True)
+                        print(f"🔒 Sync {period} → {number}", flush=True)
                         agent.analyze_round(period, number)
         except Exception as e:
             print(f"API Err: {e}", flush=True)
