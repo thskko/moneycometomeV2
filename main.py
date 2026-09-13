@@ -1,56 +1,60 @@
 import requests
 import time
 import os
-import json
 import threading
-from collections import deque, Counter
-from datetime import datetime, timedelta
+from collections import deque, Counter, defaultdict
+from datetime import datetime
 from flask import Flask, jsonify
 
+# ==========================================
+# TELEGRAM CONFIG
+# ==========================================
 TELEGRAM_TOKEN = "8913070806:AAF3rP0zKJtofE-5KVesqcdoHzn7Go0avho"
 CHAT_ID = "-1004402480797"
+# ==========================================
 
 app = Flask(__name__)
 global_agent = None
 
-# =========================================================
+
+# ==========================================
 # 📊 DASHBOARD
-# =========================================================
+# ==========================================
 @app.route('/')
 def home():
     global global_agent
     if not global_agent:
-        return "<h3>🚀 AI Sniper v3.2 starting...</h3>"
+        return "<h3>🔢 Number Bot v3.0 starting...</h3>"
     
     a = global_agent
     total = a.total_wins + a.total_losses
     wr = (a.total_wins / total * 100) if total > 0 else 0.0
     win3 = a.get_win3_rate()
     
-    top_bots = sorted(a.bot_stats.items(), key=lambda x: x[1]["wr"], reverse=True)[:10]
-    bot_rows = "".join([
-        f"<tr><td>{bid}</td><td>{s['wins']}</td><td>{s['losses']}</td>"
-        f"<td>{s['wr']*100:.1f}%</td><td>{s['weight']:.2f}</td></tr>"
-        for bid, s in top_bots
+    last_nums = " → ".join([str(n) for n in list(a.number_window)[-20:]])
+    
+    freq = Counter(a.number_window)
+    freq_str = " | ".join([f"{i}:{freq.get(i, 0)}" for i in range(10)])
+    
+    pat_rows = "".join([
+        f"<tr><td>{k}</td><td>{v}</td><td>{a.pattern_wr.get(k, 0)*100:.1f}%</td></tr>"
+        for k, v in a.pattern_stats.most_common(15)
     ])
     
-    pat_stats = "<br>".join([f"{k}: {v}" for k, v in a.pattern_stats.items()])
-    cm = a.confusion_matrix
-    
     return f"""
-    <html><head><title>AI Sniper v3.2</title>
+    <html><head><title>Number Bot v3.0</title>
     <meta http-equiv="refresh" content="15">
     <style>
     body{{background:#0a0e27;color:#0ff;font-family:monospace;padding:20px}}
     h1,h2{{color:#0ff;text-shadow:0 0 10px #0ff}}
     .box{{background:#1a1f3a;border:1px solid #0ff;padding:15px;margin:10px 0;border-radius:8px}}
     .big{{font-size:32px;color:#0f0;font-weight:bold}}
-    .red{{color:#f44}}
+    .nums{{font-size:18px;color:#ff0;word-wrap:break-word}}
     table{{width:100%;border-collapse:collapse}}
     th,td{{padding:8px;border:1px solid #0ff;text-align:left}}
     th{{background:#0ff;color:#000}}
     </style></head><body>
-    <h1>🚀 AI SNIPER ENGINE v3.2</h1>
+    <h1>🔢 NUMBER PATTERN BOT v3.0</h1>
     
     <div class="box">
       <h2>📊 Performance</h2>
@@ -58,46 +62,32 @@ def home():
       <p>Signals: {a.total_signals} | Skips: {a.total_skips}</p>
       <p>Wins: {a.total_wins} | Losses: {a.total_losses}</p>
       <p>Win Rate: <span class="big">{wr:.2f}%</span></p>
-      <p>Win-in-1-3-Steps: <span class="big">{win3:.1f}%</span></p>
-      <p>Current Step: {a.current_step + 1} ({a.get_current_multiplier()}x)</p>
+      <p>Win-in-3: <span class="big">{win3:.1f}%</span></p>
+      <p>Current Step: {a.current_step + 1} ({a.get_multiplier()}x)</p>
     </div>
     
     <div class="box">
-      <h2>💰 Bankroll</h2>
-      <p>{a.bankroll.get_status()}</p>
-      <p>Peak: {a.bankroll.session_peak:.2f}</p>
-      <p>Max Drawdown: {a.bankroll.max_drawdown:.2f}</p>
+      <h2>🎯 Last 20 Numbers</h2>
+      <p class="nums">{last_nums}</p>
     </div>
     
     <div class="box">
-      <h2>🎯 Win by Step</h2>
-      <p>S1: {a.win_by_step[0]} | S2: {a.win_by_step[1]} | S3: {a.win_by_step[2]} | S4+: {a.win_by_step[3]}</p>
+      <h2>📊 Number Frequency</h2>
+      <p>{freq_str}</p>
     </div>
     
     <div class="box">
-      <h2>📈 Confusion Matrix</h2>
-      <p>Big→Big: {cm['BB']} | Big→Small: {cm['BS']}</p>
-      <p>Small→Big: {cm['SB']} | Small→Small: {cm['SS']}</p>
-      <p>Precision: {a.get_precision():.1f}% | F1: {a.get_f1():.1f}%</p>
-    </div>
-    
-    <div class="box">
-      <h2>🎲 Pattern Stats</h2>
-      <p>{pat_stats}</p>
-    </div>
-    
-    <div class="box">
-      <h2>🏆 Top 10 Bots</h2>
+      <h2>🎲 Pattern Statistics</h2>
       <table>
-        <tr><th>Bot</th><th>W</th><th>L</th><th>WR</th><th>Weight</th></tr>
-        {bot_rows}
+        <tr><th>Pattern</th><th>Count</th><th>WR</th></tr>
+        {pat_rows}
       </table>
     </div>
     
     <div class="box">
       <h2>📅 Last Period</h2>
-      <p>{a.last_period} → {a.last_result}</p>
-      <p>Signal Source: {a.last_triggered_bot}</p>
+      <p>{a.last_period} → Number: {a.last_number} → {a.last_result}</p>
+      <p>Signal Source: {a.last_triggered_reason}</p>
     </div>
     </body></html>
     """
@@ -116,90 +106,47 @@ def api_stats():
         "signals": a.total_signals,
         "skips": a.total_skips,
         "step": a.current_step,
-        "balance": a.bankroll.balance
     })
 
 
-# =========================================================
-# 💰 BANKROLL TRACKER
-# =========================================================
-class BankrollTracker:
-    def __init__(self, initial=1000):
-        self.initial = initial
-        self.balance = initial
-        self.session_peak = initial
-        self.max_drawdown = 0
-        self.daily_loss = 0
-        self.daily_reset = datetime.now().date()
-    
-    def reset_daily(self):
-        today = datetime.now().date()
-        if today != self.daily_reset:
-            self.daily_loss = 0
-            self.daily_reset = today
-    
-    def update(self, win, step, base_bet=1):
-        self.reset_daily()
-        bet = base_bet * (2 ** step)
-        if win:
-            self.balance += bet
-        else:
-            self.balance -= bet
-            self.daily_loss += bet
-        if self.balance > self.session_peak:
-            self.session_peak = self.balance
-        dd = self.session_peak - self.balance
-        if dd > self.max_drawdown:
-            self.max_drawdown = dd
-    
-    def should_stop(self):
-        return self.daily_loss >= self.initial * 0.10
-    
-    def get_status(self):
-        pnl = self.balance - self.initial
-        pnl_pct = (pnl / self.initial) * 100
-        icon = "🟢" if pnl >= 0 else "🔴"
-        return f"{icon} {self.balance:.2f} ({pnl_pct:+.1f}%)"
-
-
-# =========================================================
-# 🎯 MAIN ENGINE v3.2
-# =========================================================
-class AISniperEngineV3:
+# ==========================================
+# 🎯 NUMBER PATTERN ENGINE v3.0
+# ==========================================
+class NumberPatternEngineV3:
     def __init__(self):
         global global_agent
         global_agent = self
         
-        self.window = deque(maxlen=300)
+        self.number_window = deque(maxlen=300)
+        
         self.current_step = 0
         self.active_prediction = None
+        self.active_patterns_used = []
         self.is_paused = False
         self.last_period = "None"
+        self.last_number = 0
         self.last_result = "None"
-        self.last_triggered_bot = "None"
+        self.last_triggered_reason = "None"
         
         self.total_signals = 0
         self.total_wins = 0
         self.total_losses = 0
         self.total_skips = 0
         self.consecutive_losses = 0
-        self.max_consecutive_losses = 0
-        
         self.win_by_step = {0: 0, 1: 0, 2: 0, 3: 0}
-        self.bankroll = BankrollTracker(initial=1000)
-        self.confusion_matrix = {"BB": 0, "BS": 0, "SB": 0, "SS": 0}
+        
         self.pattern_stats = Counter()
         
-        self.num_bots = 50
-        self.bot_stats = {
-            f"Bot_{i+1}": {"wins": 0, "losses": 0, "wr": 0.0, "weight": 1.0, "last_pred": None}
-            for i in range(self.num_bots)
-        }
+        # 🆕 Pattern WR default 60%
+        self.pattern_wr = defaultdict(lambda: 0.60)
+        self.pattern_win = defaultdict(int)
+        self.pattern_total = defaultdict(int)
         
-        self.rounds_since_optimize = 0
-        self.confidence_history = deque(maxlen=50)
-
-    def get_current_multiplier(self):
+        self.transition_matrix = defaultdict(lambda: defaultdict(int))
+        
+        self.number_freq = Counter()
+    
+    def get_multiplier(self):
         return 2 ** self.current_step
     
     def send_telegram(self, message):
@@ -207,449 +154,367 @@ class AISniperEngineV3:
         payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
         try:
             r = requests.post(url, json=payload, timeout=10)
-            print(f"📤 TG: {r.status_code} | {message[:40]}", flush=True)
-            if r.status_code != 200:
-                print(f"❌ TG Error: {r.text}", flush=True)
+            print(f"📤 TG: {r.status_code}", flush=True)
         except Exception as e:
-            print(f"❌ TG Exception: {e}", flush=True)
+            print(f"❌ TG Err: {e}", flush=True)
+    
+    def update_pattern_wr(self, actual):
+        for pat_name, pat_sig in self.active_patterns_used:
+            self.pattern_total[pat_name] += 1
+            if pat_sig == actual:
+                self.pattern_win[pat_name] += 1
+            
+            total = self.pattern_total[pat_name]
+            if total > 0:
+                self.pattern_wr[pat_name] = self.pattern_win[pat_name] / total
     
     # =========================================================
-    # 🧠 50 BOT STRATEGIES
+    # 🎯 PATTERNS 1-10
     # =========================================================
-    def run_bot(self, bot_idx, arr):
-        n = len(arr)
-        if n < 15: return None
-        
-        if bot_idx == 0: return arr[-1]
-        elif bot_idx == 1: return "Small" if arr[-1]=="Big" else "Big"
-        elif bot_idx == 2: return "Big" if arr[-3:].count("Big")>=2 else "Small"
-        elif bot_idx == 3: return "Small" if arr[-3:].count("Big")>=2 else "Big"
-        elif bot_idx == 4: return "Big" if arr[-5:].count("Big")>=3 else "Small"
-        elif bot_idx == 5: return "Small" if arr[-5:].count("Big")>=3 else "Big"
-        elif bot_idx == 6:
-            s=1
-            for x in reversed(arr[:-1]):
-                if x==arr[-1]: s+=1
-                else: break
-            return arr[-1] if s>=2 else ("Small" if arr[-1]=="Big" else "Big")
-        elif bot_idx == 7:
-            s=1
-            for x in reversed(arr[:-1]):
-                if x==arr[-1]: s+=1
-                else: break
-            return ("Small" if arr[-1]=="Big" else "Big") if s>=2 else arr[-1]
-        elif bot_idx == 8:
-            b=sum(1 for x in arr[-7:] if x=="Big")
-            return "Big" if b>=4 else "Small"
-        elif bot_idx == 9:
-            b=sum(1 for x in arr[-10:] if x=="Big")
-            return "Big" if b>=6 else "Small"
-        elif bot_idx == 10:
-            last=arr[-1]
-            nxt=[arr[i+1] for i in range(n-1) if arr[i]==last]
-            if len(nxt)>=3: return Counter(nxt).most_common(1)[0][0]
-            return None
-        elif bot_idx == 11:
-            if n<20: return None
-            p=tuple(arr[-2:])
-            nxt=[arr[i+2] for i in range(n-2) if tuple(arr[i:i+2])==p]
-            if len(nxt)>=3: return Counter(nxt).most_common(1)[0][0]
-            return None
-        elif bot_idx == 12:
-            if n<25: return None
-            p=tuple(arr[-3:])
-            nxt=[arr[i+3] for i in range(n-3) if tuple(arr[i:i+3])==p]
-            if len(nxt)>=2: return Counter(nxt).most_common(1)[0][0]
-            return None
-        elif bot_idx == 13:
-            if n<30: return None
-            p=tuple(arr[-4:])
-            nxt=[arr[i+4] for i in range(n-4) if tuple(arr[i:i+4])==p]
-            if len(nxt)>=2: return Counter(nxt).most_common(1)[0][0]
-            return None
-        elif bot_idx == 14:
-            alt=sum(1 for i in range(-6,-1) if arr[i]!=arr[i+1])
-            if alt>=5: return "Small" if arr[-1]=="Big" else "Big"
-            return None
-        elif bot_idx == 15:
-            if arr[-2:]==["Big","Big"]:
-                s=[arr[i+2] for i in range(n-2) if arr[i:i+2]==["Big","Big"]]
-                if s: return Counter(s).most_common(1)[0][0]
-            return None
-        elif bot_idx == 16:
-            if arr[-2:]==["Small","Small"]:
-                b=[arr[i+2] for i in range(n-2) if arr[i:i+2]==["Small","Small"]]
-                if b: return Counter(b).most_common(1)[0][0]
-            return None
-        elif bot_idx == 17:
-            last=arr[-1]; gap=1
-            for x in reversed(arr[:-1]):
-                if x==last: gap+=1
-                else: break
-            if gap>=4: return "Small" if last=="Big" else "Big"
-            return None
-        elif bot_idx == 18:
-            b=arr[-20:].count("Big")
-            if b>=13: return "Small"
-            if b<=7: return "Big"
-            return None
-        elif bot_idx == 19:
-            b=arr[-30:].count("Big") if n>=30 else arr.count("Big")
-            if b>=18: return "Small"
-            if b<=12: return "Big"
-            return None
-        elif bot_idx == 20:
-            b=arr[-10:].count("Big")+1
-            s=arr[-10:].count("Small")+1
-            p=b/(b+s)
-            if p>=0.65: return "Big"
-            if p<=0.35: return "Small"
-            return None
-        elif bot_idx == 21:
-            if n<20: return None
-            b=arr[-20:].count("Big")+1
-            s=arr[-20:].count("Small")+1
-            p=b/(b+s)
-            if p>=0.62: return "Big"
-            if p<=0.38: return "Small"
-            return None
-        elif bot_idx == 22:
-            b=arr[-15:].count("Big") if n>=15 else arr.count("Big")
-            if b>=11: return "Small"
-            if b<=4: return "Big"
-            return None
-        elif bot_idx == 23:
-            bb=sum(1 for i in range(-15,0) if arr[i]=="Big" and arr[i+1]=="Big")
-            if bb>=6: return "Small"
-            return None
-        elif bot_idx == 24:
-            ss=sum(1 for i in range(-15,0) if arr[i]=="Small" and arr[i+1]=="Small")
-            if ss>=6: return "Big"
-            return None
-        elif bot_idx == 25:
-            s=1
-            for x in reversed(arr[:-1]):
-                if x==arr[-1]: s+=1
-                else: break
-            if s==3: return "Small" if arr[-1]=="Big" else "Big"
-            return None
-        elif bot_idx == 26:
-            s=1
-            for x in reversed(arr[:-1]):
-                if x==arr[-1]: s+=1
-                else: break
-            if s==4: return "Small" if arr[-1]=="Big" else "Big"
-            return None
-        elif bot_idx == 27:
-            if n<15: return None
-            f5=arr[-10:-5].count("Big"); l5=arr[-5:].count("Big")
-            if f5<=1 and l5>=3: return "Big"
-            if f5>=3 and l5<=1: return "Small"
-            return None
-        elif bot_idx == 28:
-            if n<20: return None
-            b10=arr[-10:].count("Big"); b20=arr[-20:].count("Big")
-            if b10>b20*0.6: return "Big"
-            if b10<b20*0.4: return "Small"
-            return None
-        elif bot_idx == 29:
-            b=arr[-25:].count("Big") if n>=25 else arr.count("Big")
-            tn=min(25,n)
-            if b>=tn-3: return "Small"
-            if b<=3: return "Big"
-            return None
-        elif bot_idx == 30:
-            if arr[-3:]==["Big","Small","Small"]: return "Big"
-            return None
-        elif bot_idx == 31:
-            if arr[-3:]==["Small","Big","Big"]: return "Small"
-            return None
-        elif bot_idx == 32:
-            if arr[-3:]==["Big","Small","Big"]: return "Small"
-            return None
-        elif bot_idx == 33:
-            if arr[-3:]==["Small","Big","Small"]: return "Big"
-            return None
-        elif bot_idx == 34:
-            if arr[-4:]==["Big","Big","Small","Big"]: return "Small"
-            return None
-        elif bot_idx == 35:
-            if arr[-4:]==["Small","Small","Big","Small"]: return "Big"
-            return None
-        elif bot_idx == 36:
-            l5=arr[-5:]
-            if l5[:2]==l5[-2:][::-1]:
-                return "Small" if l5[-1]=="Big" else "Big"
-            return None
-        elif bot_idx == 37:
-            if n<6: return None
-            bl=[arr[-6:-4],arr[-4:-2],arr[-2:]]
-            if bl[0]==bl[2] and bl[0]!=bl[1]:
-                return bl[0][0]
-            return None
-        elif bot_idx == 38:
-            sc=0
-            for i,x in enumerate(arr[-10:]):
-                w=1+(i/10)
-                sc+=w if x=="Big" else -w
-            if sc>2: return "Big"
-            if sc<-2: return "Small"
-            return None
-        elif bot_idx == 39:
-            if n<20: return None
-            l5=arr[-5:].count("Big"); l20=arr[-20:].count("Big")
-            if l5>=4 and l20<=8: return "Big"
-            if l5<=1 and l20>=12: return "Small"
-            return None
-        elif bot_idx == 40: return "Big" if arr.count("Big")>=n/2 else "Small"
-        elif bot_idx == 41: return "Small" if arr.count("Big")>=n/2 else "Big"
-        elif bot_idx == 42: return arr[-1]
-        elif bot_idx == 43: return "Small" if arr[-1]=="Big" else "Big"
-        elif bot_idx == 44:
-            b=arr[:10].count("Big") if n>=10 else arr.count("Big")
-            return "Big" if b>=5 else "Small"
-        elif bot_idx == 45: return arr[-2] if n>=2 else "Big"
-        elif bot_idx == 46: return "Small" if arr[-2]=="Big" else "Big" if n>=2 else "Small"
-        elif bot_idx == 47: return arr[-3] if n>=3 else "Big"
-        elif bot_idx == 48: return "Small" if arr[-4]=="Big" else "Big" if n>=4 else "Small"
-        else:
-            bigs=sum(1 for s in self.bot_stats.values() if s.get("last_pred")=="Big")
-            return "Small" if bigs>=25 else "Big"
+    def pattern_odd_even(self, nums):
+        if len(nums) < 5: return None, 0, "odd_even"
+        last5 = nums[-5:]
+        odds = sum(1 for x in last5 if x % 2 == 1)
+        evens = 5 - odds
+        if odds >= 4:
+            self.pattern_stats["odd_4+"] += 1
+            return "Small", 72, "odd_even"
+        if evens >= 4:
+            self.pattern_stats["even_4+"] += 1
+            return "Big", 72, "odd_even"
+        return None, 0, "odd_even"
     
-    # =========================================================
-    # 🎯 PATTERN DETECTION
-    # =========================================================
-    def detect_patterns(self, arr):
-        if len(arr) < 15: return None, 0
-        
-        s = 1
-        for x in reversed(arr[:-1]):
-            if x == arr[-1]: s += 1
+    def pattern_high_low(self, nums):
+        if len(nums) < 5: return None, 0, "high_low"
+        last5 = nums[-5:]
+        highs = sum(1 for x in last5 if x >= 5)
+        if highs >= 4:
+            self.pattern_stats["high_4+"] += 1
+            return "Small", 78, "high_low"
+        if highs <= 1:
+            self.pattern_stats["low_4+"] += 1
+            return "Big", 78, "high_low"
+        return None, 0, "high_low"
+    
+    def pattern_number_repeat(self, nums):
+        if len(nums) < 3: return None, 0, "repeat"
+        last = nums[-1]
+        repeat = 1
+        for x in reversed(nums[:-1]):
+            if x == last: repeat += 1
             else: break
+        if repeat >= 3:
+            self.pattern_stats[f"repeat_{last}"] += 1
+            if last >= 5:
+                return "Small", 82, "repeat"
+            else:
+                return "Big", 82, "repeat"
+        return None, 0, "repeat"
+    
+    def pattern_number_pair(self, nums):
+        if len(nums) < 15: return None, 0, "pair"
+        last2 = tuple(nums[-2:])
+        next_after = []
+        for i in range(len(nums) - 3):
+            if tuple(nums[i:i+2]) == last2:
+                next_after.append(nums[i+2])
+        if len(next_after) < 3: return None, 0, "pair"
+        counter = Counter(next_after)
+        most_common, count = counter.most_common(1)[0]
+        if count / len(next_after) >= 0.60:
+            self.pattern_stats["pair_markov"] += 1
+            if most_common >= 5:
+                return "Big", 78, "pair"
+            else:
+                return "Small", 78, "pair"
+        return None, 0, "pair"
+    
+    def pattern_sum_analysis(self, nums):
+        if len(nums) < 5: return None, 0, "sum"
+        s = sum(nums[-5:])
+        if s >= 32:
+            self.pattern_stats["sum_high"] += 1
+            return "Small", 76, "sum"
+        if s <= 13:
+            self.pattern_stats["sum_low"] += 1
+            return "Big", 76, "sum"
+        return None, 0, "sum"
+    
+    def pattern_distance(self, nums):
+        if len(nums) < 6: return None, 0, "distance"
+        distances = [abs(nums[i] - nums[i+1]) for i in range(-5, -1)]
+        avg_dist = sum(distances) / len(distances)
+        if avg_dist <= 2:
+            if nums[-1] >= 5:
+                return "Small", 72, "distance"
+            else:
+                return "Big", 72, "distance"
+        if avg_dist >= 6:
+            return "Big" if nums[-1] < 5 else "Small", 72, "distance"
+        return None, 0, "distance"
+    
+    def pattern_zone(self, nums):
+        if len(nums) < 10: return None, 0, "zone"
+        last10 = nums[-10:]
+        zone_a = sum(1 for x in last10 if x <= 4)
+        zone_b = 10 - zone_a
+        if zone_b >= 8:
+            self.pattern_stats["zone_b_8+"] += 1
+            return "Small", 88, "zone"
+        if zone_a >= 8:
+            self.pattern_stats["zone_a_8+"] += 1
+            return "Big", 88, "zone"
+        return None, 0, "zone"
+    
+    def pattern_bs_streak(self, nums):
+        if len(nums) < 5: return None, 0, "bs_streak"
+        bs = ["Big" if n >= 5 else "Small" for n in nums]
+        streak = 1
+        for x in reversed(bs[:-1]):
+            if x == bs[-1]: streak += 1
+            else: break
+        if streak >= 6:
+            self.pattern_stats["bs_continue_6+"] += 1
+            return bs[-1], 88, "bs_streak"
+        if streak == 4:
+            self.pattern_stats["bs_reverse_4"] += 1
+            return "Small" if bs[-1] == "Big" else "Big", 80, "bs_streak"
+        return None, 0, "bs_streak"
+    
+    def pattern_transition(self, nums):
+        if len(nums) < 30: return None, 0, "transition"
+        for i in range(len(nums) - 1):
+            self.transition_matrix[nums[i]][nums[i+1]] += 1
+        last = nums[-1]
+        next_counts = self.transition_matrix[last]
+        if not next_counts or sum(next_counts.values()) < 5:
+            return None, 0, "transition"
+        big_votes = sum(c for n, c in next_counts.items() if n >= 5)
+        small_votes = sum(c for n, c in next_counts.items() if n < 5)
+        total = big_votes + small_votes
+        if total == 0: return None, 0, "transition"
+        big_pct = big_votes / total
+        if big_pct >= 0.70:
+            self.pattern_stats["transition_big"] += 1
+            return "Big", min(big_pct * 100, 90), "transition"
+        elif big_pct <= 0.30:
+            self.pattern_stats["transition_small"] += 1
+            return "Small", min((1 - big_pct) * 100, 90), "transition"
+        return None, 0, "transition"
+    
+    def pattern_frequency(self, nums):
+        if len(nums) < 30: return None, 0, "frequency"
+        recent100 = nums[-100:] if len(nums) >= 100 else nums
+        freq = Counter(recent100)
         
-        if s >= 8:
-            self.pattern_stats["dragon_reverse"] += 1
-            return ("Small" if arr[-1]=="Big" else "Big"), 92
-        if s >= 6:
-            self.pattern_stats["dragon_continue"] += 1
-            return arr[-1], 88
+        rare_big = sum(1 for n in range(5, 10) if freq.get(n, 0) < 8)
+        rare_small = sum(1 for n in range(0, 5) if freq.get(n, 0) < 8)
+        common_big = sum(1 for n in range(5, 10) if freq.get(n, 0) > 13)
+        common_small = sum(1 for n in range(0, 5) if freq.get(n, 0) > 13)
         
-        alt = sum(1 for i in range(-9, -1) if arr[i] != arr[i+1])
-        if alt >= 7:
-            self.pattern_stats["pingpong"] += 1
-            nxt = "Small" if arr[-1]=="Big" else "Big"
-            return nxt, 87
-        
-        if len(arr) >= 8:
-            if arr[-3:]==["Big","Big","Big"] and arr[-6:-3]==["Small","Small","Small"]:
-                self.pattern_stats["triple_b"] += 1
-                return "Small", 82
-            if arr[-3:]==["Small","Small","Small"] and arr[-6:-3]==["Big","Big","Big"]:
-                self.pattern_stats["triple_s"] += 1
-                return "Big", 82
-        
-        if len(arr) >= 5:
-            if arr[-1]==arr[-2]=="Big" and arr[-3]==arr[-4]==arr[-5]=="Small":
-                self.pattern_stats["double_top"] += 1
-                return "Small", 85
-            if arr[-1]==arr[-2]=="Small" and arr[-3]==arr[-4]==arr[-5]=="Big":
-                self.pattern_stats["double_bottom"] += 1
-                return "Big", 85
-        
-        return None, 0
+        if rare_big >= 3:
+            self.pattern_stats["freq_rare_big"] += 1
+            return "Big", 78, "frequency"
+        if rare_small >= 3:
+            self.pattern_stats["freq_rare_small"] += 1
+            return "Small", 78, "frequency"
+        if common_big >= 4:
+            self.pattern_stats["freq_common_big"] += 1
+            return "Big", 76, "frequency"
+        if common_small >= 4:
+            self.pattern_stats["freq_common_small"] += 1
+            return "Small", 76, "frequency"
+        return None, 0, "frequency"
     
     # =========================================================
-    # 🎯 MULTI-TIMEFRAME
+    # 🆕 TOP NUMBERS
     # =========================================================
-    def multi_timeframe(self, arr):
-        if len(arr) < 100: return None, 0
-        s_big = arr[-10:].count("Big")
-        m_big = arr[-30:].count("Big")
-        l_big = arr[-100:].count("Big")
+    def get_top_numbers(self, nums, signal, top_n=3):
+        if signal == "Big":
+            candidates = [5, 6, 7, 8, 9]
+        else:
+            candidates = [0, 1, 2, 3, 4]
         
-        short = "Big" if s_big>=7 else "Small" if s_big<=3 else None
-        medium = "Big" if m_big>=20 else "Small" if m_big<=10 else None
-        long_t = "Big" if l_big>=60 else "Small" if l_big<=40 else None
+        if len(nums) < 30:
+            if signal == "Big":
+                default = [(7, 30), (8, 25), (6, 22), (5, 13), (9, 10)]
+            else:
+                default = [(2, 30), (3, 25), (1, 22), (4, 13), (0, 10)]
+            return default[:top_n]
         
-        if short and medium and long_t and short==medium==long_t:
-            return short, 88
-        return None, 0
+        recent = nums[-100:] if len(nums) >= 100 else nums
+        freq = Counter(recent)
+        candidate_total = sum(freq.get(n, 0) for n in candidates)
+        
+        if candidate_total == 0:
+            if signal == "Big":
+                return [(7, 30), (8, 25), (6, 22)][:top_n]
+            else:
+                return [(2, 30), (3, 25), (1, 22)][:top_n]
+        
+        probs = []
+        for n in candidates:
+            count = freq.get(n, 0)
+            prob = (count / candidate_total) * 100
+            probs.append((n, prob))
+        
+        probs.sort(key=lambda x: x[1], reverse=True)
+        
+        result = []
+        for n, p in probs[:top_n]:
+            result.append((n, max(p, 5)))
+        
+        return result
     
     # =========================================================
-    # 🎯 MAIN SIGNAL GENERATOR
+    # 🎯 MAIN SIGNAL GENERATOR (v3.0)
     # =========================================================
-    def generate_signal(self, arr):
-        pat_sig, pat_conf = self.detect_patterns(arr)
-        if pat_sig and pat_conf >= 85:
-            return pat_sig, pat_conf, "Pattern"
+    def generate_signal(self, nums):
+        patterns = [
+            self.pattern_odd_even(nums),
+            self.pattern_high_low(nums),
+            self.pattern_number_repeat(nums),
+            self.pattern_number_pair(nums),
+            self.pattern_sum_analysis(nums),
+            self.pattern_distance(nums),
+            self.pattern_zone(nums),
+            self.pattern_bs_streak(nums),
+            self.pattern_transition(nums),
+            self.pattern_frequency(nums),
+        ]
         
-        mtf_sig, mtf_conf = self.multi_timeframe(arr)
-        if mtf_sig:
-            return mtf_sig, mtf_conf, "Multi-TF"
+        # 🆕 SOLO MODE — Pattern 1 ခု 88%+ + WR 60%+
+        for sig, conf, pat_name in patterns:
+            if sig is None: continue
+            if conf >= 88 and self.pattern_wr[pat_name] >= 0.60:
+                return sig, conf, f"Solo {pat_name} ({conf:.0f}%)", [(pat_name, sig)]
         
-        valid = {}
-        for i in range(self.num_bots):
-            b_id = f"Bot_{i+1}"
-            pred = self.run_bot(i, arr)
-            if pred:
-                valid[b_id] = pred
-                self.bot_stats[b_id]["last_pred"] = pred
+        # Weighted Vote
+        big_score = 0.0
+        small_score = 0.0
+        patterns_used = []
         
-        if len(valid) < 15:
-            return None, 0, f"Low bots ({len(valid)})"
+        for sig, conf, pat_name in patterns:
+            if sig is None: continue
+            
+            pat_wr = self.pattern_wr[pat_name]
+            wr_weight = 0.5 + pat_wr
+            base_weight = conf / 100.0
+            final_weight = base_weight * wr_weight
+            
+            if sig == "Big":
+                big_score += final_weight
+            else:
+                small_score += final_weight
+            
+            patterns_used.append((pat_name, sig))
         
-        big_s = 0.0; small_s = 0.0
-        for b_id, pred in valid.items():
-            w = self.bot_stats[b_id]["weight"]
-            if pred == "Big": big_s += w
-            else: small_s += w
+        total = big_score + small_score
+        if total < 0.5:
+            return None, 0, "No pattern", []
         
-        total = big_s + small_s
-        if total == 0: return None, 0, "No score"
+        big_pct = big_score / total
         
-        big_pct = big_s / total
-        conf = max(big_pct, 1-big_pct) * 100
+        # 🆕 TRIPLE CONFIRMATION
+        big_count = sum(1 for _, sig in patterns_used if sig == "Big")
+        small_count = sum(1 for _, sig in patterns_used if sig == "Small")
         
+        if big_count >= 3 and small_count == 0:
+            return "Big", 95, f"Triple Confirm ({big_count}x)", patterns_used
+        if small_count >= 3 and big_count == 0:
+            return "Small", 95, f"Triple Confirm ({small_count}x)", patterns_used
+        
+        # 🆕 Threshold 85% (STRICT)
         if big_pct >= 0.85:
-            return "Big", conf, f"STRONG Big"
+            return "Big", big_pct * 100, f"High Conf ({big_pct*100:.0f}%)", patterns_used
         elif big_pct <= 0.15:
-            return "Small", conf, f"STRONG Small"
+            return "Small", (1 - big_pct) * 100, f"High Conf ({(1-big_pct)*100:.0f}%)", patterns_used
         
-        if len(arr) >= 20:
-            b20 = arr[-20:].count("Big")
-            if b20 >= 18: return "Small", 90, "Extreme 18+"
-            if b20 <= 2:  return "Big", 90, "Extreme 2-"
-        
-        return None, conf, "Low confidence"
+        return None, 0, f"Low conf ({big_pct*100:.0f}%)", patterns_used
     
     # =========================================================
     # 🎯 ANALYZE ROUND
     # =========================================================
-    def analyze_round(self, period, current_result):
+    def analyze_round(self, period, number):
         self.last_period = str(period)
+        self.last_number = number
+        current_result = "Big" if number >= 5 else "Small"
         self.last_result = current_result
+        
         if self.is_paused: return
         
         short = "..." + str(period)[-3:]
         
         if self.active_prediction:
-            pred = self.active_prediction
-            win = (current_result.lower() == pred.lower())
-            
-            if pred == "Big" and current_result == "Big": self.confusion_matrix["BB"] += 1
-            elif pred == "Big" and current_result == "Small": self.confusion_matrix["BS"] += 1
-            elif pred == "Small" and current_result == "Big": self.confusion_matrix["SB"] += 1
-            else: self.confusion_matrix["SS"] += 1
-            
-            self.bankroll.update(win, self.current_step)
+            win = (self.active_prediction == current_result)
+            self.update_pattern_wr(current_result)
             
             if win:
                 self.total_wins += 1
                 step_key = min(self.current_step, 3)
                 self.win_by_step[step_key] += 1
+                self.consecutive_losses = 0
+                self.current_step = 0
                 
                 self.send_telegram(
-                    f"✅ <b>WIN</b>\n"
-                    f"📊 WR: {self.get_wr():.1f}% | Win3: {self.get_win3_rate():.1f}%\n"
-                    f"💰 {self.bankroll.get_status()}"
+                    f"✅ <b>WIN at Step {self.current_step+1 if False else step_key+1}</b>\n"
+                    f"🔢 Number: {number} ({current_result})\n"
+                    f"📊 WR: {self.get_wr():.1f}% | Win3: {self.get_win3_rate():.1f}%"
                 )
-                self.current_step = 0
-                self.consecutive_losses = 0
             else:
                 self.total_losses += 1
                 self.current_step += 1
                 self.consecutive_losses += 1
-                if self.consecutive_losses > self.max_consecutive_losses:
-                    self.max_consecutive_losses = self.consecutive_losses
+                
+                # 🆕 Step 3+ Alert (Martingale မထိ)
+                if self.current_step >= 3:
+                    self.send_telegram(
+                        f"⚠️ <b>Step {self.current_step+1} ({self.get_multiplier()}x)</b>\n"
+                        f"Continuing to win..."
+                    )
             
             self.active_prediction = None
+            self.active_patterns_used = []
         
-        if len(self.window) > 0:
-            self.update_bot_performance(current_result)
+        self.number_window.append(number)
+        self.number_freq[number] += 1
         
-        self.window.append(current_result)
-        
-        if len(self.window) < 20:
-            self.send_telegram(f"⏳ Warm-up {short} ({len(self.window)}/20)")
+        if len(self.number_window) < 10:
+            self.send_telegram(f"⏳ Warm-up {short} ({len(self.number_window)}/10)")
             return
         
-        arr = list(self.window)
-        signal, conf, reason = self.generate_signal(arr)
-        
-        self.rounds_since_optimize += 1
-        if self.rounds_since_optimize >= 50:
-            self.auto_optimize()
-            self.rounds_since_optimize = 0
+        nums = list(self.number_window)
+        signal, conf, reason, patterns_used = self.generate_signal(nums)
         
         if signal is None:
             self.total_skips += 1
-            self.send_telegram(
-                f"⏸️ <b>SKIP</b> {short}\n"
-                f"Reason: {reason} ({conf:.0f}%)"
-            )
+            self.send_telegram(f"⏸️ <b>SKIP</b> {short}\nReason: {reason}")
             return
         
+        # Top 3 Numbers
+        top_numbers = self.get_top_numbers(nums, signal, top_n=3)
+        top_str = "\n".join([
+            f"   {i+1}️⃣ <b>{num}</b> ({prob:.0f}%)"
+            for i, (num, prob) in enumerate(top_numbers)
+        ])
+        
         self.active_prediction = signal
+        self.active_patterns_used = patterns_used
         self.total_signals += 1
-        self.last_triggered_bot = reason
-        self.confidence_history.append(conf)
+        self.last_triggered_reason = reason
         
         stars = "⭐" * min(int(conf / 20), 5)
-        msg = (
-            f"🎯 <b>HIGH-CONFIDENCE SIGNAL</b> {stars}\n"
+        self.send_telegram(
+            f"🔢 <b>NUMBER BOT v3.0 SIGNAL</b> {stars}\n"
             f"📅 Period: {short}\n"
-            f"📌 {reason} ({conf:.0f}%)\n"
-            f"🎯 <b>{signal.upper()}</b>\n"
-            f"💰 Step {self.current_step+1} ({self.get_current_multiplier()}x)\n"
+            f"📌 {reason}\n"
+            f"🎯 <b>{signal.upper()}</b>\n\n"
+            f"📊 <b>Top 3 Numbers:</b>\n"
+            f"{top_str}\n\n"
+            f"💰 Step {self.current_step+1} ({self.get_multiplier()}x)\n"
             f"📊 WR: {self.get_wr():.1f}% | Win3: {self.get_win3_rate():.1f}%"
         )
-        self.send_telegram(msg)
     
-    # =========================================================
-    # 🔧 BOT PERFORMANCE
-    # =========================================================
-    def update_bot_performance(self, actual):
-        for b_id, stats in self.bot_stats.items():
-            pred = stats.get("last_pred")
-            if not pred: continue
-            
-            if pred.lower() == actual.lower():
-                stats["wins"] += 1
-            else:
-                stats["losses"] += 1
-            
-            t = stats["wins"] + stats["losses"]
-            stats["wr"] = stats["wins"]/t if t>0 else 0.0
-            
-            if t >= 5:
-                if stats["wr"] >= 0.70: stats["weight"] = 4.0
-                elif stats["wr"] >= 0.65: stats["weight"] = 3.0
-                elif stats["wr"] >= 0.60: stats["weight"] = 2.0
-                elif stats["wr"] >= 0.55: stats["weight"] = 1.5
-                elif stats["wr"] >= 0.50: stats["weight"] = 1.0
-                elif stats["wr"] >= 0.45: stats["weight"] = 0.5
-                elif stats["wr"] >= 0.40: stats["weight"] = 0.2
-                else: stats["weight"] = 0.05
-    
-    def auto_optimize(self):
-        top = sorted(self.bot_stats.items(), key=lambda x: x[1]["wr"], reverse=True)
-        top5 = top[:5]
-        bot5 = top[-5:]
-        
-        top_str = "\n".join([f"  {bid}: {s['wr']*100:.0f}%" for bid, s in top5])
-        bot_str = "\n".join([f"  {bid}: {s['wr']*100:.0f}%" for bid, s in bot5])
-        
-        self.send_telegram(
-            f"🔧 <b>AUTO-OPTIMIZE REPORT</b>\n\n"
-            f"🏆 <b>Top 5 Bots:</b>\n{top_str}\n\n"
-            f"📉 <b>Worst 5 Bots:</b>\n{bot_str}\n\n"
-            f"📊 Overall WR: {self.get_wr():.1f}%\n"
-            f"🎯 Win3: {self.get_win3_rate():.1f}%"
-        )
-    
-    # =========================================================
-    # 📊 METRICS
-    # =========================================================
     def get_wr(self):
         t = self.total_wins + self.total_losses
         return (self.total_wins/t*100) if t>0 else 0.0
@@ -659,24 +524,11 @@ class AISniperEngineV3:
         if t == 0: return 0.0
         w3 = self.win_by_step[0] + self.win_by_step[1] + self.win_by_step[2]
         return (w3/t)*100
-    
-    def get_precision(self):
-        cm = self.confusion_matrix
-        tp = cm["BB"] + cm["SS"]
-        fp = cm["BS"] + cm["SB"]
-        return (tp/(tp+fp)*100) if (tp+fp)>0 else 0.0
-    
-    def get_recall(self):
-        return self.get_precision()
-    
-    def get_f1(self):
-        p = self.get_precision(); r = self.get_recall()
-        return (2*p*r/(p+r)) if (p+r)>0 else 0.0
 
 
-# =========================================================
+# ==========================================
 # 📱 TELEGRAM COMMANDS
-# =========================================================
+# ==========================================
 def poll_telegram(agent):
     try:
         requests.get(
@@ -699,21 +551,14 @@ def poll_telegram(agent):
                     if cid != CHAT_ID: continue
                     
                     if txt == "/status":
-                        cm = agent.confusion_matrix
                         agent.send_telegram(
-                            f"📊 <b>AI SNIPER v3.2 STATUS</b>\n\n"
+                            f"📊 <b>NUMBER BOT v3.0 STATUS</b>\n\n"
                             f"⚙️ {'PAUSED 🛑' if agent.is_paused else 'RUNNING 🟢'}\n"
                             f"Signals: {agent.total_signals} | Skips: {agent.total_skips}\n"
                             f"✅ W: {agent.total_wins} | ❌ L: {agent.total_losses}\n"
-                            f"📈 <b>WR: {agent.get_wr():.2f}%</b>\n"
-                            f"🎯 <b>Win-in-3: {agent.get_win3_rate():.1f}%</b>\n"
-                            f"📉 Max Loss Streak: {agent.max_consecutive_losses}\n\n"
-                            f"💰 {agent.bankroll.get_status()}\n\n"
-                            f"<b>Win by Step:</b>\n"
-                            f"  S1: {agent.win_by_step[0]}\n"
-                            f"  S2: {agent.win_by_step[1]}\n"
-                            f"  S3: {agent.win_by_step[2]}\n"
-                            f"  S4+: {agent.win_by_step[3]}"
+                            f"📈 WR: {agent.get_wr():.2f}%\n"
+                            f"🎯 Win3: {agent.get_win3_rate():.1f}%\n"
+                            f"💰 Step: {agent.current_step+1} ({agent.get_multiplier()}x)"
                         )
                     elif txt == "/pause":
                         agent.is_paused = True
@@ -725,23 +570,18 @@ def poll_telegram(agent):
                         agent.current_step = 0
                         agent.consecutive_losses = 0
                         agent.send_telegram("🔄 Step reset")
-                    elif txt == "/top":
-                        top = sorted(agent.bot_stats.items(), key=lambda x: x[1]["wr"], reverse=True)[:10]
-                        s = "\n".join([f"{bid}: {st['wr']*100:.0f}% ({st['wins']}W)" for bid, st in top])
-                        agent.send_telegram(f"🏆 <b>Top 10 Bots</b>\n{s}")
-                    elif txt == "/bank":
-                        b = agent.bankroll
-                        agent.send_telegram(
-                            f"💰 <b>Bankroll Status</b>\n"
-                            f"Balance: {b.balance:.2f}\n"
-                            f"P/L: {b.balance - b.initial:+.2f}"
-                        )
+                    elif txt == "/patterns":
+                        top = sorted(agent.pattern_wr.items(), key=lambda x: x[1], reverse=True)
+                        s = "\n".join([
+                            f"{name}: {wr*100:.0f}% ({agent.pattern_total[name]}x)"
+                            for name, wr in top[:10]
+                        ])
+                        agent.send_telegram(f"🎯 <b>Pattern WR</b>\n{s}")
                     elif txt == "/help":
                         agent.send_telegram(
                             "🤖 <b>Commands</b>\n"
-                            "/status - Full stats\n"
-                            "/top - Top 10 bots\n"
-                            "/bank - Bankroll\n"
+                            "/status - Stats\n"
+                            "/patterns - Pattern WR\n"
                             "/pause - Pause\n"
                             "/resume - Resume\n"
                             "/reset - Reset step"
@@ -751,12 +591,12 @@ def poll_telegram(agent):
         time.sleep(1)
 
 
-# =========================================================
+# ==========================================
 # 🚀 MAIN LOOP
-# =========================================================
+# ==========================================
 def run_bot():
-    print("🚀 AI Sniper v3.2 (Skip Message ON) starting...", flush=True)
-    agent = AISniperEngineV3()
+    print("🔢 Number Bot v3.0 (Triple Goal) starting...", flush=True)
+    agent = NumberPatternEngineV3()
     threading.Thread(target=poll_telegram, args=(agent,), daemon=True).start()
     
     last_period = ""
@@ -788,13 +628,12 @@ def run_bot():
                     latest = lst[0]
                     raw = str(latest.get("issueNumber"))
                     period = str(int(raw) + 2)
-                    num = int(latest.get("number"))
-                    result = "Big" if num >= 5 else "Small"
+                    number = int(latest.get("number"))
                     
                     if period != last_period:
                         last_period = period
-                        print(f"Sync {period} → {result}", flush=True)
-                        agent.analyze_round(period, result)
+                        print(f"🔢 Sync {period} → {number}", flush=True)
+                        agent.analyze_round(period, number)
         except Exception as e:
             print(f"API Err: {e}", flush=True)
         time.sleep(1.5)
