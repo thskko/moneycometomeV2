@@ -1,1044 +1,1564 @@
-import requests
-import time
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+HYBRID V6.1 (Unlimited Martingale)
+Data-driven Big/Small signal engine + Telegram + Flask dashboard.
+- No automatic betting execution.
+- Step tracking display only (Unlimited steps, resets only on Win).
+- Loss silent, Win shown.
+- Configure secrets through environment variables.
+"""
+
 import os
+import time
 import math
+import json
 import sqlite3
 import threading
-from collections import deque, Counter, defaultdict
-from datetime import datetime
-from flask import Flask, jsonify
+from collections import Counter, defaultdict, deque
+from datetime import datetime, timezone
+import requests
+from flask import Flask, jsonify, render_template_string
 
-# ==========================================
+# ============================================================
 # CONFIG
-# ==========================================
-TELEGRAM_TOKEN = "8913070806:AAF3rP0zKJtofE-5KVesqcdoHzn7Go0avho"
-CHAT_ID = "-1004402480797"
+# ============================================================
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8913070806:AAF3rP0zKJtofE-5KVesqcdoHzn7Go0avho")
+CHAT_ID = os.getenv("CHAT_ID", "-1004402480797")
 
-API_URL = "https://6lotteryapi.com/api/webapi/GetNoaverageEmerdList"
-API_AUTH = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOiIxNzg3OTgxNTA5IiwibmJmIjoiMTc4Nzk4MTUwOSIsImV4cCI6IjE3ODc5ODMzMDkiLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL2V4cGlyYXRpb24iOiI4LzI5LzIwMjYgMTI6MzE2NDkgUE0iLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL3JvbGUiOiJBY2Nlc3NfVG9rZW4iLCJVc2VySWQiOiIxMDEyMjEzIiwiVXNlck5hbWUiOiI5NTk3NDA5MzkzNzAiLCJVc2VyUGhvdG8iOiI5IiwiTmlja05hbWUiOiJUaGVrR3lpIiwiQW1vdW50IjoiODcuMzAiLCJJbnRlZ3JhbCI6IjAiLCJMb2dpbk1hcmsiOiJINSIsImxvZ2luVGltZSI6IjcvMjkvMjAyNiAxMjowMTo0OSBQTSIsImxvZ2luSVBBZGRyZXNzIjoiNDUuNDEuMTA0LjI0MCIsImRiTnVtYmVyIjoiMCIsIklzdmFsaWRhdG9yIjoiMCIsIktleUNvZGUiOiIzMjMzMiIsImRva2VuVHlwZSI6IjJBY2Nlc3NfVG9rZW4iLCJob25lVHlwZSI6IjAiLCJVc2VyVHlwZSI6IjAiLCJVc2VyTmFtZ2UiOiIuIiwiaXNzIjoiand0SXNzdWVyIiwiYXVkIjoibG90dGVyeVRpY2tldCJ9.ZL0Y9gexUTCsKwWeZhCLAAw8AABEYJt0GnIzIviMG4g"
+API_URL = os.getenv(
+    "RESULT_API_URL",
+    "https://6lotteryapi.com/api/webapi/GetNoaverageEmerdList"
+)
+API_AUTH = os.getenv(
+    "RESULT_API_AUTH",
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOiIxNzg3OTgxNTA5IiwibmJmIjoiMTc4Nzk4MTUwOSIsImV4cCI6IjE3ODc5ODMzMDkiLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL2V4cGlyYXRpb24iOiI4LzI5LzIwMjYgMTI6MzE2NDkgUE0iLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL3JvbGUiOiJBY2Nlc3NfVG9rZW4iLCJVc2VySWQiOiIxMDEyMjEzIiwiVXNlck5hbWUiOiI5NTk3NDA5MzkzNzAiLCJVc2VyUGhvdG8iOiI5IiwiTmlja05hbWUiOiJUaGVrR3lpIiwiQW1vdW50IjoiODcuMzAiLCJJbnRlZ3JhbCI6IjAiLCJMb2dpbk1hcmsiOiJINSIsImxvZ2luVGltZSI6IjcvMjkvMjAyNiAxMjowMTo0OSBQTSIsImxvZ2luSVBBZGRyZXNzIjoiNDUuNDEuMTA0LjI0MCIsImRiTnVtYmVyIjoiMCIsIklzdmFsaWRhdG9yIjoiMCIsIktleUNvZGUiOiIzMjMzMiIsImRva2VuVHlwZSI6IjJBY2Nlc3NfVG9rZW4iLCJob25lVHlwZSI6IjAiLCJVc2VyVHlwZSI6IjAiLCJVc2VyTmFtZ2UiOiIuIiwiaXNzIjoiand0SXNzdWVyIiwiYXVkIjoibG90dGVyeVRpY2tldCJ9.ZL0Y9gexUTCsKwWeZhCLAAw8AABEYJt0GnIzIviMG4g"
+)
+API_ORIGIN = os.getenv("API_ORIGIN", "https://6win598.com")
+API_REFERER = os.getenv("API_REFERER", "https://6win598.com/")
 
-BASE_BET = 1.0
+API_TYPE_ID = int(os.getenv("API_TYPE_ID", "30"))
+API_LANGUAGE = int(os.getenv("API_LANGUAGE", "7"))
+PERIOD_OFFSET = int(os.getenv("PERIOD_OFFSET", "2"))
+POLL_SECONDS = float(os.getenv("POLL_SECONDS", "2.0"))
+REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "10"))
+
+DB_PATH = os.getenv("DB_PATH", "hybrid_v61.db")
+MIN_HISTORY = int(os.getenv("MIN_HISTORY", "30"))
+MAX_HISTORY = int(os.getenv("MAX_HISTORY", "1000"))
+
+MIN_SIGNAL_PROB = float(os.getenv("MIN_SIGNAL_PROB", "0.58"))
+MIN_EDGE = float(os.getenv("MIN_EDGE", "0.08"))
+MAX_MODEL_DISAGREEMENT = float(os.getenv("MAX_MODEL_DISAGREEMENT", "0.35"))
+
+RECENT_WINDOW = int(os.getenv("RECENT_WINDOW", "30"))
+CALIBRATION_MIN_SAMPLES = int(os.getenv("CALIBRATION_MIN_SAMPLES", "12"))
+
+BASE_BET = float(os.getenv("BASE_BET", "1.0"))
+# STEP_CAP ဖယ်ရှားလိုက်ပါပြီ
+PORT = int(os.getenv("PORT", "8080"))
+
+API_RANDOM = os.getenv("API_RANDOM", "036263f367384d418be07465793c8da8")
+API_SIGNATURE = os.getenv("API_SIGNATURE", "55F4FD150F15F090B943374F3C9BE78B")
 
 app = Flask(__name__)
 global_agent = None
 
 
-# ==========================================
-# 📊 DASHBOARD
-# ==========================================
-@app.route('/')
-def home():
-    global global_agent
-    if not global_agent:
-        return "<h3>🚀 HYBRID v4.4.4 starting...</h3>"
-    
-    a = global_agent
-    total = a.total_wins + a.total_losses
-    wr = (a.total_wins / total * 100) if total > 0 else 0.0
-    win3 = a.get_win3_rate()
-    
-    last_20 = " ".join([("B" if r == "Big" else "S") for r in list(a.history)[-20:]])
-    
-    pat_rows = ""
-    for k, v in sorted(a.pattern_wr.items(), key=lambda x: x[1], reverse=True)[:12]:
-        t = a.pattern_total[k]
-        acc_wr = a.get_accelerated_wr(k)
-        pat_rows += f"<tr><td>{k}</td><td>{v*100:.0f}%</td><td>{acc_wr*100:.0f}%</td><td>{t}</td></tr>"
-    
-    return f"""
-    <html><head><title>HYBRID v4.4.4</title>
-    <meta http-equiv="refresh" content="15">
-    <style>
-    body{{background:#0a0e27;color:#0ff;font-family:monospace;padding:20px}}
-    h1{{color:#0ff;text-shadow:0 0 10px #0ff}}
-    .box{{background:#1a1f3a;border:1px solid #0ff;padding:15px;margin:10px 0;border-radius:8px}}
-    .big{{font-size:32px;color:#0f0;font-weight:bold}}
-    .nums{{font-size:18px;color:#ff0;letter-spacing:3px}}
-    table{{width:100%;border-collapse:collapse}}
-    th,td{{padding:6px;border:1px solid #0ff;text-align:left;font-size:12px}}
-    th{{background:#0ff;color:#000}}
-    </style></head><body>
-    <h1>🚀 HYBRID v4.4.4</h1>
-    
-    <div class="box">
-      <h2>📊 Performance</h2>
-      <p>Status: <b>{'PAUSED 🛑' if a.is_paused else 'RUNNING 🟢'}</b></p>
-      <p>Signals: {a.total_signals} | Skips: {a.total_skips}</p>
-      <p>W: {a.total_wins} | L: {a.total_losses}</p>
-      <p>Win Rate: <span class="big">{wr:.2f}%</span></p>
-      <p>Win3: <span class="big">{win3:.1f}%</span></p>
-      <p>Step: {a.current_step + 1} ({2**a.current_step}x)</p>
-      <p>Vol: {a.volatility_index:.2f}</p>
-    </div>
-    
-    <div class="box">
-      <h2>💰 Martingale</h2>
-      <p>Base Bet: <b>${BASE_BET:.2f}</b></p>
-      <p>Current Step: <b>{a.current_step + 1}</b></p>
-      <p>Next Bet: <b>${BASE_BET * (2**a.current_step):.2f}</b></p>
-    </div>
-    
-    <div class="box">
-      <h2>🎯 Last 20</h2>
-      <p class="nums">{last_20}</p>
-    </div>
-    
-    <div class="box">
-      <h2>📈 Patterns</h2>
-      <table>
-        <tr><th>Pattern</th><th>All WR</th><th>Accel WR</th><th>Count</th></tr>
-        {pat_rows}
-      </table>
-    </div>
-    
-    <div class="box">
-      <h2>📅 Last Period</h2>
-      <p>{a.last_period} → {a.last_number} → {a.last_result}</p>
-      <p>Signal: {a.last_signal}</p>
-    </div>
-    </body></html>
-    """
+# ============================================================
+# HELPERS
+# ============================================================
+VALID_RESULTS = ("Big", "Small")
 
+def number_to_result(number):
+    try:
+        n = int(number)
+    except (TypeError, ValueError):
+        return None
+    if 1 <= n <= 4:
+        return "Small"
+    if 5 <= n <= 9:
+        return "Big"
+    return None
 
-# ==========================================
-# ONLINE LEARNER
-# ==========================================
-class OnlineLearner:
-    def __init__(self, lr=0.05):
-        self.weights = defaultdict(lambda: 1.0)
-        self.lr = lr
-    
-    def update(self, pattern_name, was_correct):
-        if was_correct:
-            self.weights[pattern_name] += self.lr
+def result_to_bit(result):
+    return 1 if result == "Big" else 0
+
+def clamp(value, lo, hi):
+    return max(lo, min(hi, value))
+
+def utc_now():
+    return datetime.now(timezone.utc).isoformat()
+
+def entropy_binary(arr):
+    if not arr:
+        return 0.0
+    b = sum(1 for x in arr if x == "Big")
+    p = b / len(arr)
+    q = 1.0 - p
+    h = 0.0
+    if p > 0:
+        h -= p * math.log2(p)
+    if q > 0:
+        h -= q * math.log2(q)
+    return clamp(h, 0.0, 1.0)
+
+def transition_rate(arr):
+    if len(arr) < 2:
+        return 0.0
+    return sum(
+        arr[i] != arr[i - 1] for i in range(1, len(arr))
+    ) / (len(arr) - 1)
+
+def current_streak(arr):
+    if not arr:
+        return 0, None
+    last = arr[-1]
+    count = 0
+    for x in reversed(arr):
+        if x != last:
+            break
+        count += 1
+    return count, last
+
+def longest_streak(arr):
+    best = 0
+    best_result = None
+    cur = 0
+    prev = None
+    for x in arr:
+        if x == prev:
+            cur += 1
         else:
-            self.weights[pattern_name] -= self.lr
-        self.weights[pattern_name] = max(0.3, min(2.0, self.weights[pattern_name]))
-    
-    def get_weight(self, pattern_name):
-        return self.weights[pattern_name]
+            cur = 1
+        prev = x
+        if cur > best:
+            best = cur
+            best_result = x
+    return best, best_result
 
 
-# ==========================================
-# DATA ENGINE
-# ==========================================
+# ============================================================
+# DATABASE
+# ============================================================
 class DataEngine:
-    def __init__(self, db_path='wingo_v444.db'):
-        self.db_path = db_path
-        self.conn = sqlite3.connect(db_path, check_same_thread=False)
-        self.cursor = self.conn.cursor()
-        
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                period TEXT UNIQUE,
-                number INTEGER,
-                result TEXT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS pattern_stats (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                pattern TEXT,
-                signal TEXT,
-                actual TEXT,
-                win INTEGER,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        self.conn.commit()
-    
+    def __init__(self, path=DB_PATH):
+        self.path = path
+        self.conn = sqlite3.connect(
+            self.path, check_same_thread=False
+        )
+        self.lock = threading.Lock()
+        self._init_db()
+
+    def _init_db(self):
+        with self.lock:
+            cur = self.conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    period TEXT UNIQUE NOT NULL,
+                    number INTEGER NOT NULL,
+                    result TEXT NOT NULL,
+                    timestamp TEXT NOT NULL
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS predictions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    source_period TEXT,
+                    target_period TEXT,
+                    prediction TEXT,
+                    probability REAL,
+                    edge REAL,
+                    reason TEXT,
+                    regime TEXT,
+                    entropy REAL,
+                    transition_rate REAL,
+                    models_json TEXT,
+                    groups_json TEXT,
+                    evaluated INTEGER DEFAULT 0,
+                    actual TEXT,
+                    correct INTEGER
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS pattern_stats (
+                    name TEXT PRIMARY KEY,
+                    total INTEGER DEFAULT 0,
+                    wins INTEGER DEFAULT 0,
+                    recent_json TEXT,
+                    updated_at TEXT
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS errors (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    source_period TEXT,
+                    prediction TEXT,
+                    actual TEXT,
+                    regime TEXT,
+                    models_json TEXT,
+                    wrong_models_json TEXT,
+                    correct_models_json TEXT
+                )
+            """)
+            self.conn.commit()
+
     def save_result(self, period, number, result):
-        try:
-            self.cursor.execute(
-                'INSERT OR IGNORE INTO history (period, number, result) VALUES (?, ?, ?)',
-                (str(period), number, result)
-            )
-            self.conn.commit()
-        except Exception as e:
-            print(f"DB Save Err: {e}", flush=True)
-    
-    def save_pattern_stat(self, pattern, signal, actual, win):
-        try:
-            self.cursor.execute('''
-                INSERT INTO pattern_stats (pattern, signal, actual, win)
+        with self.lock:
+            self.conn.execute("""
+                INSERT OR IGNORE INTO history
+                (period, number, result, timestamp)
                 VALUES (?, ?, ?, ?)
-            ''', (pattern, signal, actual, 1 if win else 0))
+            """, (str(period), int(number), result, utc_now()))
             self.conn.commit()
-        except Exception as e:
-            print(f"DB Pattern Err: {e}", flush=True)
-    
-    def get_history(self, limit=500):
+
+    def has_period(self, period):
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT 1 FROM history WHERE period = ? LIMIT 1",
+                (str(period),)
+            ).fetchone()
+            return row is not None
+
+    def get_history(self, limit=MAX_HISTORY):
+        with self.lock:
+            rows = self.conn.execute("""
+                SELECT result FROM history ORDER BY id DESC LIMIT ?
+            """, (int(limit),)).fetchall()
+            return [r[0] for r in reversed(rows)]
+
+    def get_last_rows(self, limit=30):
+        with self.lock:
+            rows = self.conn.execute("""
+                SELECT period, number, result, timestamp
+                FROM history ORDER BY id DESC LIMIT ?
+            """, (int(limit),)).fetchall()
+            return [
+                {"period": r[0], "number": r[1], "result": r[2], "timestamp": r[3]}
+                for r in reversed(rows)
+            ]
+
+    def save_prediction(self, p):
+        with self.lock:
+            cur = self.conn.execute("""
+                INSERT INTO predictions (
+                    created_at, source_period, target_period,
+                    prediction, probability, edge, reason, regime,
+                    entropy, transition_rate, models_json, groups_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                utc_now(),
+                p.get("source_period"),
+                p.get("target_period"),
+                p.get("prediction"),
+                p.get("probability", 0),
+                p.get("edge", 0),
+                p.get("reason", ""),
+                p.get("regime", ""),
+                p.get("entropy", 0),
+                p.get("transition_rate", 0),
+                json.dumps(p.get("models", {}), ensure_ascii=False),
+                json.dumps(p.get("groups", {}), ensure_ascii=False),
+            ))
+            self.conn.commit()
+            return cur.lastrowid
+
+    def evaluate_prediction(self, prediction_id, actual):
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT prediction FROM predictions WHERE id = ?",
+                (prediction_id,)
+            ).fetchone()
+            if not row:
+                return None
+            predicted = row[0]
+            correct = int(predicted == actual)
+            self.conn.execute("""
+                UPDATE predictions
+                SET evaluated = 1, actual = ?, correct = ?
+                WHERE id = ?
+            """, (actual, correct, prediction_id))
+            self.conn.commit()
+            return bool(correct)
+
+    def save_error(self, source_period, prediction, actual, regime,
+                   models, wrong_models, correct_models):
+        with self.lock:
+            self.conn.execute("""
+                INSERT INTO errors (
+                    created_at, source_period, prediction, actual,
+                    regime, models_json, wrong_models_json, correct_models_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                utc_now(), source_period, prediction, actual, regime,
+                json.dumps(models, ensure_ascii=False),
+                json.dumps(wrong_models, ensure_ascii=False),
+                json.dumps(correct_models, ensure_ascii=False),
+            ))
+            self.conn.commit()
+
+    def save_pattern_stats(self, name, total, wins, recent):
+        with self.lock:
+            self.conn.execute("""
+                INSERT INTO pattern_stats
+                (name, total, wins, recent_json, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET
+                    total=excluded.total,
+                    wins=excluded.wins,
+                    recent_json=excluded.recent_json,
+                    updated_at=excluded.updated_at
+            """, (name, total, wins, json.dumps(list(recent)), utc_now()))
+            self.conn.commit()
+
+    def load_pattern_stats(self):
+        with self.lock:
+            rows = self.conn.execute("""
+                SELECT name, total, wins, recent_json FROM pattern_stats
+            """).fetchall()
+            out = {}
+            for name, total, wins, recent_json in rows:
+                try:
+                    recent = json.loads(recent_json or "[]")
+                except Exception:
+                    recent = []
+                out[name] = {"total": int(total), "wins": int(wins), "recent": recent}
+            return out
+
+    def stats(self):
+        with self.lock:
+            row = self.conn.execute("""
+                SELECT COUNT(*), SUM(CASE WHEN correct=1 THEN 1 ELSE 0 END)
+                FROM predictions WHERE evaluated=1
+            """).fetchone()
+            total = int(row[0] or 0)
+            wins = int(row[1] or 0)
+            return {
+                "predictions": total,
+                "wins": wins,
+                "losses": total - wins,
+                "wr": wins / total if total else 0.0,
+            }
+
+
+# ============================================================
+# PATTERN TRACKER
+# ============================================================
+class PatternTracker:
+    def __init__(self, db):
+        self.db = db
+        self.total = defaultdict(int)
+        self.wins = defaultdict(int)
+        self.recent = defaultdict(lambda: deque(maxlen=50))
+        saved = db.load_pattern_stats()
+        for name, item in saved.items():
+            self.total[name] = item["total"]
+            self.wins[name] = item["wins"]
+            self.recent[name].extend(item["recent"][-50:])
+
+    def update(self, name, predicted, actual):
+        self.total[name] += 1
+        correct = predicted == actual
+        if correct:
+            self.wins[name] += 1
+        self.recent[name].append(1 if correct else 0)
+        self.db.save_pattern_stats(
+            name, self.total[name], self.wins[name], self.recent[name]
+        )
+
+    def reliability(self, name):
+        n = self.total[name]
+        if n == 0:
+            return 0.5
+        prior_n = 20
+        posterior = (self.wins[name] + prior_n * 0.5) / (n + prior_n)
+        return clamp(posterior, 0.35, 0.65)
+
+    def recent_wr(self, name):
+        data = list(self.recent[name])
+        if not data:
+            return 0.5
+        return sum(data) / len(data)
+
+    def sample_factor(self, name):
+        n = self.total[name]
+        return clamp(math.sqrt(n / 50.0), 0.25, 1.0)
+
+    def score(self, name):
+        rel = self.reliability(name)
+        recent = self.recent_wr(name)
+        sample = self.sample_factor(name)
+        blended = rel * 0.70 + recent * 0.30
+        multiplier = 0.75 + (blended - 0.5) * 2.0
+        return clamp(
+            1.0 + (multiplier - 1.0) * sample,
+            0.65, 1.35
+        )
+
+    def all_stats(self):
+        names = sorted(set(self.total) | set(self.recent))
+        result = []
+        for name in names:
+            total = self.total[name]
+            wins = self.wins[name]
+            result.append({
+                "name": name,
+                "total": total,
+                "wins": wins,
+                "wr": wins / total if total else 0.0,
+                "recent_wr": self.recent_wr(name),
+                "reliability": self.reliability(name),
+                "sample_factor": self.sample_factor(name),
+                "score": self.score(name),
+            })
+        result.sort(key=lambda x: (x["wr"], x["total"]), reverse=True)
+        return result
+
+
+# ============================================================
+# REGIME DETECTOR
+# ============================================================
+class RegimeDetector:
+    def detect(self, arr):
+        if len(arr) < 20:
+            return {
+                "name": "UNKNOWN",
+                "confidence": 0.0,
+                "entropy": entropy_binary(arr),
+                "transition_rate": transition_rate(arr),
+                "streak": current_streak(arr)[0],
+                "bias": (arr.count("Big") / len(arr) if arr else 0.5),
+            }
+        recent20 = arr[-20:]
+        recent10 = arr[-10:]
+        ent = entropy_binary(recent20)
+        trans = transition_rate(recent20)
+        streak_len, streak_result = current_streak(arr)
+        bias = recent20.count("Big") / 20
+
+        if trans >= 0.80:
+            return self._pack("ALTERNATING", 0.90, ent, trans, streak_len, bias)
+        if streak_len >= 6:
+            return self._pack("LONG_STREAK", min(0.95, 0.55 + streak_len * 0.05),
+                              ent, trans, streak_len, bias)
+        if bias >= 0.75:
+            return self._pack("BIG_BIASED", 0.85, ent, trans, streak_len, bias)
+        if bias <= 0.25:
+            return self._pack("SMALL_BIASED", 0.85, ent, trans, streak_len, bias)
+        if trans >= 0.65:
+            return self._pack("FAST_SWITCH", 0.72, ent, trans, streak_len, bias)
+
+        old10 = arr[-20:-10]
+        old_bias = old10.count("Big") / 10
+        new_bias = recent10.count("Big") / 10
+        if abs(new_bias - old_bias) >= 0.50:
+            return self._pack("TRANSITION", 0.82, ent, trans, streak_len, bias)
+        if ent < 0.40:
+            return self._pack("CHAOTIC", 0.75, ent, trans, streak_len, bias)
+        if ent >= 0.72 and 0.35 <= trans <= 0.65:
+            return self._pack("BALANCED", 0.70, ent, trans, streak_len, bias)
+        if ent >= 0.62:
+            return self._pack("TREND", 0.70, ent, trans, streak_len, bias)
+        return self._pack("MIXED", 0.55, ent, trans, streak_len, bias)
+
+    @staticmethod
+    def _pack(name, confidence, ent, trans, streak, bias):
+        return {
+            "name": name,
+            "confidence": confidence,
+            "entropy": ent,
+            "transition_rate": trans,
+            "streak": streak,
+            "bias": bias,
+        }
+
+
+# ============================================================
+# PATTERN ENGINE
+# ============================================================
+class PatternEngine:
+    def predict(self, arr, regime):
+        models = {}
+        methods = [
+            self.markov_order2, self.markov_order3,
+            self.frequency, self.recent_bias,
+            self.transition, self.streak_continue,
+            self.streak_reversal, self.alternating,
+            self.mirror, self.sequence_repeat,
+            self.run_length_context,
+        ]
+        for method in methods:
+            result = method(arr, regime)
+            if result:
+                models[result["name"]] = result
+        return models
+
+    def markov_order2(self, arr, regime):
+        if len(arr) < 25: return None
+        order = 2
+        context = tuple(arr[-order:])
+        following = []
+        for i in range(len(arr) - order):
+            if tuple(arr[i:i + order]) == context:
+                following.append(arr[i + order])
+        if len(following) < 5: return None
+        counts = Counter(following)
+        total = sum(counts.values())
+        p_big = counts["Big"] / total
+        signal = "Big" if p_big >= 0.5 else "Small"
+        p = max(p_big, 1 - p_big)
+        return {
+            "name": "markov2", "group": "markov",
+            "signal": signal,
+            "probability": clamp(p, 0.50, 0.85),
+            "support": total,
+            "metadata": {"p_big": p_big},
+        }
+
+    def markov_order3(self, arr, regime):
+        if len(arr) < 35: return None
+        order = 3
+        context = tuple(arr[-order:])
+        following = []
+        for i in range(len(arr) - order):
+            if tuple(arr[i:i + order]) == context:
+                following.append(arr[i + order])
+        if len(following) < 4: return None
+        counts = Counter(following)
+        total = sum(counts.values())
+        p_big = counts["Big"] / total
+        signal = "Big" if p_big >= 0.5 else "Small"
+        p = max(p_big, 1 - p_big)
+        return {
+            "name": "markov3", "group": "markov",
+            "signal": signal,
+            "probability": clamp(p, 0.50, 0.88),
+            "support": total,
+            "metadata": {"p_big": p_big},
+        }
+
+    def frequency(self, arr, regime):
+        if len(arr) < 20: return None
+        sub = arr[-20:]
+        p_big = sub.count("Big") / 20
+        if p_big >= 0.65:
+            return {
+                "name": "frequency20", "group": "distribution",
+                "signal": "Big",
+                "probability": clamp(0.50 + abs(p_big - 0.5) * 0.65, 0.50, 0.78),
+                "support": 20, "metadata": {"p_big": p_big},
+            }
+        if p_big <= 0.35:
+            return {
+                "name": "frequency20", "group": "distribution",
+                "signal": "Small",
+                "probability": clamp(0.50 + abs(p_big - 0.5) * 0.65, 0.50, 0.78),
+                "support": 20, "metadata": {"p_big": p_big},
+            }
+        return None
+
+    def recent_bias(self, arr, regime):
+        if len(arr) < 10: return None
+        sub = arr[-10:]
+        p_big = sub.count("Big") / 10
+        if p_big >= 0.70: signal = "Big"
+        elif p_big <= 0.30: signal = "Small"
+        else: return None
+        p = 0.50 + abs(p_big - 0.5) * 0.55
+        return {
+            "name": "recent_bias10", "group": "distribution",
+            "signal": signal,
+            "probability": clamp(p, 0.50, 0.75),
+            "support": 10, "metadata": {"p_big": p_big},
+        }
+
+    def transition(self, arr, regime):
+        if len(arr) < 30: return None
+        old = arr[-20:-10]
+        new = arr[-10:]
+        old_p = old.count("Big") / 10
+        new_p = new.count("Big") / 10
+        delta = new_p - old_p
+        if delta >= 0.50:
+            return {
+                "name": "transition", "group": "transition",
+                "signal": "Big",
+                "probability": clamp(0.54 + delta * 0.35, 0.50, 0.72),
+                "support": 20, "metadata": {"delta": delta},
+            }
+        if delta <= -0.50:
+            return {
+                "name": "transition", "group": "transition",
+                "signal": "Small",
+                "probability": clamp(0.54 + abs(delta) * 0.35, 0.50, 0.72),
+                "support": 20, "metadata": {"delta": delta},
+            }
+        return None
+
+    def streak_continue(self, arr, regime):
+        if len(arr) < 8: return None
+        streak, result = current_streak(arr)
+        if streak < 4 or result not in VALID_RESULTS: return None
+        if regime["name"] not in (
+            "TREND", "LONG_STREAK", "BIG_BIASED", "SMALL_BIASED"
+        ):
+            return None
+        p = clamp(0.50 + min(streak, 8) * 0.025, 0.50, 0.70)
+        return {
+            "name": "streak_continue", "group": "streak",
+            "signal": result,
+            "probability": p,
+            "support": streak,
+            "metadata": {"streak": streak},
+        }
+
+    def streak_reversal(self, arr, regime):
+        if len(arr) < 8: return None
+        streak, result = current_streak(arr)
+        if streak < 4: return None
+        opposite = "Small" if result == "Big" else "Big"
+        if regime["name"] in ("LONG_STREAK", "BIG_BIASED", "SMALL_BIASED"):
+            p = clamp(0.50 + min(streak - 3, 6) * 0.035, 0.50, 0.70)
+            return {
+                "name": "streak_reversal", "group": "streak",
+                "signal": opposite,
+                "probability": p,
+                "support": streak,
+                "metadata": {"streak": streak},
+            }
+        return None
+
+    def alternating(self, arr, regime):
+        if len(arr) < 8: return None
+        sub = arr[-8:]
+        rate = transition_rate(sub)
+        if rate < 0.75: return None
+        signal = "Small" if arr[-1] == "Big" else "Big"
+        return {
+            "name": "alternating", "group": "sequence",
+            "signal": signal,
+            "probability": clamp(0.50 + (rate - 0.50) * 0.35, 0.50, 0.68),
+            "support": 8, "metadata": {"transition_rate": rate},
+        }
+
+    def mirror(self, arr, regime):
+        if len(arr) < 16: return None
+        context = tuple(arr[-3:])
+        matches = []
+        for i in range(len(arr) - 4):
+            if tuple(arr[i:i + 3]) == context:
+                matches.append(arr[i + 3])
+        if len(matches) < 4: return None
+        counts = Counter(matches)
+        winner, count = counts.most_common(1)[0]
+        p = count / len(matches)
+        if p < 0.55: return None
+        return {
+            "name": "mirror3", "group": "sequence",
+            "signal": winner,
+            "probability": clamp(p, 0.50, 0.78),
+            "support": len(matches),
+            "metadata": {"matches": len(matches)},
+        }
+
+    def sequence_repeat(self, arr, regime):
+        if len(arr) < 20: return None
+        context = tuple(arr[-4:])
+        nexts = []
+        for i in range(len(arr) - 5):
+            if tuple(arr[i:i + 4]) == context:
+                nexts.append(arr[i + 4])
+        if len(nexts) < 3: return None
+        counts = Counter(nexts)
+        winner, count = counts.most_common(1)[0]
+        p = count / len(nexts)
+        if p < 0.55: return None
+        return {
+            "name": "sequence_repeat4", "group": "sequence",
+            "signal": winner,
+            "probability": clamp(p, 0.50, 0.80),
+            "support": len(nexts),
+            "metadata": {"matches": len(nexts)},
+        }
+
+    def run_length_context(self, arr, regime):
+        if len(arr) < 30: return None
+        streak, result = current_streak(arr)
+        if streak < 2: return None
+        outcomes = []
+        for i in range(1, len(arr) - 1):
+            if arr[i] != arr[i - 1]: continue
+            run = 2
+            j = i - 2
+            while j >= 0 and arr[j] == arr[i]:
+                run += 1
+                j -= 1
+            if run == streak and i + 1 < len(arr):
+                outcomes.append(arr[i + 1])
+        if len(outcomes) < 4: return None
+        counts = Counter(outcomes)
+        winner, count = counts.most_common(1)[0]
+        p = count / len(outcomes)
+        if p < 0.55: return None
+        return {
+            "name": "run_length_context", "group": "streak_context",
+            "signal": winner,
+            "probability": clamp(p, 0.50, 0.78),
+            "support": len(outcomes),
+            "metadata": {"run_length": streak, "matches": len(outcomes)},
+        }
+
+
+# ============================================================
+# CALIBRATOR
+# ============================================================
+class Calibrator:
+    def __init__(self, db):
+        self.db = db
+        self.lock = threading.Lock()
+        self.bins = defaultdict(lambda: [0, 0])
+        self._load()
+
+    def _load(self):
         try:
-            self.cursor.execute(
-                'SELECT result FROM history ORDER BY id DESC LIMIT ?',
-                (limit,)
+            with self.db.lock:
+                rows = self.db.conn.execute("""
+                    SELECT probability, correct FROM predictions
+                    WHERE evaluated=1
+                      AND probability IS NOT NULL
+                      AND correct IS NOT NULL
+                """).fetchall()
+                for p, correct in rows:
+                    self._add(float(p), bool(correct))
+        except Exception:
+            pass
+
+    @staticmethod
+    def _key(probability):
+        p = clamp(probability, 0.50, 0.99)
+        return int(p * 100) // 5 * 5
+
+    def _add(self, probability, correct):
+        key = self._key(probability)
+        self.bins[key][0] += 1
+        self.bins[key][1] += int(correct)
+
+    def update(self, probability, correct):
+        with self.lock:
+            self._add(probability, correct)
+
+    def calibrated(self, probability):
+        p = clamp(probability, 0.50, 0.99)
+        key = self._key(p)
+        with self.lock:
+            total, wins = self.bins.get(key, [0, 0])
+            if total < CALIBRATION_MIN_SAMPLES:
+                return p
+            empirical = wins / total
+            return clamp(0.70 * empirical + 0.30 * p, 0.50, 0.99)
+
+    def stats(self):
+        out = []
+        with self.lock:
+            for key in sorted(self.bins):
+                total, wins = self.bins[key]
+                if total:
+                    out.append({
+                        "bin": f"{key}-{key+4}%",
+                        "total": total,
+                        "wins": wins,
+                        "empirical": wins / total,
+                    })
+        return out
+
+
+# ============================================================
+# EVIDENCE FUSION
+# ============================================================
+class EvidenceFusion:
+    GROUPS = (
+        "markov", "distribution", "transition",
+        "streak", "sequence", "streak_context",
+    )
+
+    def __init__(self, tracker):
+        self.tracker = tracker
+
+    def combine(self, models, regime):
+        grouped = defaultdict(list)
+        for name, model in models.items():
+            grouped[model["group"]].append(model)
+
+        selected = {}
+        for group, candidates in grouped.items():
+            candidates = sorted(
+                candidates,
+                key=lambda x: (
+                    x["probability"] * self.tracker.score(x["name"]),
+                    x["support"]
+                ),
+                reverse=True
             )
-            return [row[0] for row in self.cursor.fetchall()][::-1]
-        except:
-            return []
+            selected[group] = candidates[0]
+
+        big_evidence = 0.0
+        small_evidence = 0.0
+        total_evidence = 0.0
+        group_scores = {}
+
+        for group, model in selected.items():
+            p = model["probability"]
+            signal = model["signal"]
+            name = model["name"]
+            reliability = self.tracker.score(name)
+            support_factor = clamp(
+                math.sqrt(max(model["support"], 1) / 20.0),
+                0.35, 1.0
+            )
+            regime_factor = self.regime_factor(model, regime)
+            weight = reliability * support_factor * regime_factor
+            signed = (p - 0.5) * 2.0 * weight
+
+            if signal == "Big":
+                big_evidence += signed
+            else:
+                small_evidence += signed
+            total_evidence += abs(signed)
+
+            group_scores[group] = {
+                "signal": signal,
+                "probability": p,
+                "weight": weight,
+                "signed": signed,
+                "model": name,
+                "support": model["support"],
+            }
+
+        if not selected or total_evidence <= 0:
+            return {
+                "prediction": None,
+                "raw_probability": 0.5,
+                "agreement": 0.0,
+                "disagreement": 1.0,
+                "groups": {},
+                "selected_models": {},
+            }
+
+        net = big_evidence - small_evidence
+        probability = 0.5 + min(
+            0.49, abs(net) / max(1.0, len(selected))
+        )
+        prediction = "Big" if net >= 0 else "Small"
+        signals = [item["signal"] for item in selected.values()]
+        agreement = sum(s == prediction for s in signals) / len(signals)
+        disagreement = 1.0 - agreement
+
+        return {
+            "prediction": prediction,
+            "raw_probability": clamp(probability, 0.50, 0.99),
+            "agreement": agreement,
+            "disagreement": disagreement,
+            "groups": dict(group_scores),
+            "selected_models": {
+                group: item["name"] for group, item in selected.items()
+            },
+        }
+
+    @staticmethod
+    def regime_factor(model, regime):
+        name = model["name"]
+        r = regime["name"]
+        if r == "ALTERNATING":
+            if name in ("alternating", "markov2", "markov3"): return 1.10
+            if name == "streak_continue": return 0.85
+        if r == "LONG_STREAK":
+            if name == "streak_continue": return 1.08
+            if name == "streak_reversal": return 1.05
+        if r == "TRANSITION":
+            if name == "transition": return 1.12
+            if name in ("recent_bias10", "frequency20"): return 0.92
+        if r == "CHAOTIC":
+            if name in ("markov3", "sequence_repeat4"): return 0.85
+        return 1.0
 
 
-# ==========================================
-# 🚀 HYBRID v4.4.4 ENGINE
-# ==========================================
-class HybridEngineV444:
+# ============================================================
+# SIGNAL FILTER
+# ============================================================
+class SignalFilter:
+    def decide(self, fusion, calibrated_probability, regime):
+        prediction = fusion["prediction"]
+        if prediction is None:
+            return False, "NO_EVIDENCE"
+
+        edge = abs(calibrated_probability - 0.5)
+        if calibrated_probability < MIN_SIGNAL_PROB:
+            return False, "LOW_PROBABILITY"
+        if edge < MIN_EDGE:
+            return False, "LOW_EDGE"
+        if fusion["disagreement"] > MAX_MODEL_DISAGREEMENT:
+            return False, "MODEL_DISAGREEMENT"
+
+        if regime["name"] in ("TRANSITION", "CHAOTIC"):
+            if calibrated_probability < 0.62:
+                return False, "REGIME_UNCERTAINTY"
+        if regime["name"] == "UNKNOWN":
+            return False, "UNKNOWN_REGIME"
+
+        return True, "EDGE_OK"
+
+
+# ============================================================
+# HYBRID V6.1 ENGINE
+# ============================================================
+class HybridV61:
     def __init__(self):
         global global_agent
         global_agent = self
-        
-        self.data_engine = DataEngine()
-        self.history = deque(maxlen=500)
-        self.load_history_from_db()
-        
-        self.online_learner = OnlineLearner(lr=0.05)
-        
-        # State
-        self.current_step = 0
+
+        self.db = DataEngine()
+        self.history = deque(
+            self.db.get_history(MAX_HISTORY),
+            maxlen=MAX_HISTORY
+        )
+
+        self.regime_detector = RegimeDetector()
+        self.pattern_engine = PatternEngine()
+        self.tracker = PatternTracker(self.db)
+        self.calibrator = Calibrator(self.db)
+        self.fusion = EvidenceFusion(self.tracker)
+        self.signal_filter = SignalFilter()
+        self.lock = threading.RLock()
+
         self.active_prediction = None
-        self.active_patterns_used = []
-        self.active_bayesian = 0
+        self.current_step = 0
         self.is_paused = False
-        self.consecutive_losses = 0
+
+        self.total_signals = 0
+        self.total_skips = 0
+        self.total_wins = 0
+        self.total_losses = 0
         self.consecutive_wins = 0
-        self.trap_count = 0
-        
+        self.consecutive_losses = 0
+
+        self.win_by_step = defaultdict(int)
+        self.loss_by_step = defaultdict(int)
+
         self.last_period = "None"
-        self.last_number = 0
+        self.last_number = None
         self.last_result = "None"
         self.last_signal = "None"
         self.last_reason = "None"
-        
-        # Stats
-        self.total_signals = 0
-        self.total_wins = 0
-        self.total_losses = 0
-        self.total_skips = 0
-        self.win_by_step = {0: 0, 1: 0, 2: 0, 3: 0}
-        
-        # Pattern
-        self.pattern_stats = Counter()
-        self.pattern_wr = defaultdict(lambda: 0.5)
-        self.pattern_win = defaultdict(int)
-        self.pattern_total = defaultdict(int)
-        self.pattern_weight = defaultdict(lambda: 1.0)
-        self.pattern_recent = defaultdict(lambda: deque(maxlen=100))
-        
-        # Volatility
-        self.volatility_index = 0.5
-    
-    def load_history_from_db(self):
-        hist = self.data_engine.get_history(500)
-        for r in hist:
-            self.history.append(r)
-        print(f"📁 Loaded {len(self.history)} from DB", flush=True)
-    
+        self.last_probability = 0.0
+        self.last_edge = 0.0
+        self.last_regime = "UNKNOWN"
+
+        self.api_errors = 0
+        self.last_api_error = ""
+
+        print(f"🚀 HYBRID V6.1 loaded {len(self.history)} results", flush=True)
+
+    # --------------------------------------------------------
+    # Telegram
+    # --------------------------------------------------------
     def send_telegram(self, message):
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
+        if not TELEGRAM_TOKEN or not CHAT_ID:
+            return False
         try:
-            r = requests.post(url, json=payload, timeout=10)
-            print(f"📤 TG: {r.status_code}", flush=True)
-        except Exception as e:
-            print(f"❌ TG: {e}", flush=True)
-    
-    # =========================================================
-    # ACCELERATED WR
-    # =========================================================
-    def get_accelerated_wr(self, pattern_name):
-        recent = list(self.pattern_recent[pattern_name])
-        if len(recent) < 5:
-            return self.pattern_wr[pattern_name]
-        
-        last5 = recent[-5:]
-        last10 = recent[-10:] if len(recent) >= 10 else recent
-        last20 = recent[-20:] if len(recent) >= 20 else recent
-        
-        wr5 = sum(last5) / len(last5) if last5 else 0.5
-        wr10 = sum(last10) / len(last10) if last10 else 0.5
-        wr20 = sum(last20) / len(last20) if last20 else 0.5
-        
-        return wr5 * 0.6 + wr10 * 0.3 + wr20 * 0.1
-    
-    def time_decay_weight(self, pattern_name):
-        recent = list(self.pattern_recent[pattern_name])
-        if len(recent) < 3:
-            return 1.0
-        recent = recent[-20:]
-        weights = [0.9 ** i for i in range(len(recent) - 1, -1, -1)]
-        weighted_wr = sum(w * r for w, r in zip(weights, recent)) / sum(weights)
-        return max(0.3, min(2.0, weighted_wr / 0.5))
-    
-    def calculate_volatility(self):
-        if len(self.history) < 20:
-            self.volatility_index = 0.5
-            return 0.5
-        arr = list(self.history)
-        alt = sum(1 for i in range(-20, -1) if arr[i] != arr[i+1])
-        self.volatility_index = alt / 19
-        return self.volatility_index
-    
-    def trap_filter(self, arr):
-        if len(arr) < 15: return False
-        
-        last10 = arr[-10:]
-        b10 = last10.count("Big")
-        
-        if 4 <= b10 <= 6:
-            self.trap_count += 1
-            if self.trap_count >= 3:
-                self.trap_count = 0
-                return False
-            return True
-        else:
-            self.trap_count = 0
+            r = requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                json={
+                    "chat_id": CHAT_ID,
+                    "text": message,
+                    "parse_mode": "HTML",
+                },
+                timeout=10
+            )
+            return r.ok
+        except Exception:
             return False
-    
-    def correlation_filter(self, patterns):
-        if len(patterns) < 4:
-            return False
-        
-        big_signals = [p for p in patterns if p[0] == "Big"]
-        small_signals = [p for p in patterns if p[0] == "Small"]
-        
-        strong_big = [p for p in big_signals if p[1] >= 80]
-        strong_small = [p for p in small_signals if p[1] >= 80]
-        
-        if len(strong_big) >= 3 and len(strong_small) >= 3:
-            return True
-        
-        if len(big_signals) >= 5 and len(small_signals) >= 5:
-            big_total = sum(p[1] for p in big_signals)
-            small_total = sum(p[1] for p in small_signals)
-            if abs(big_total - small_total) < 30:
-                return True
-        
-        return False
-    
-    def multi_layer_confirm(self, arr):
-        layer1 = self.p_frequency(arr)
-        layer2 = self.p_markov2(arr)
-        layer3 = self.p_mean_reversion(arr)
-        
-        signals = [s for s, _, _ in [layer1, layer2, layer3] if s]
-        
-        if len(signals) == 3 and len(set(signals)) == 1:
-            return signals[0], 95, "🎯 Multi-Layer"
-        
-        return None, 0, "Multi-Layer"
-    
-    def bias_conflict_filter(self, arr, signal):
-        if len(arr) < 50:
-            return 1.0
-        
-        recent_bias = arr[-50:].count("Big") / 50
-        
-        if signal == "Big" and recent_bias < 0.35:
-            return 0.65
-        if signal == "Small" and recent_bias > 0.65:
-            return 0.65
-        if signal == "Big" and recent_bias > 0.65:
-            return 1.15
-        if signal == "Small" and recent_bias < 0.35:
-            return 1.15
-        
-        return 1.0
-    
-    def bayesian_inference(self, patterns):
-        log_big = math.log(0.5)
-        log_small = math.log(0.5)
-        
-        for pat_name, sig, conf in patterns:
-            wr = self.get_accelerated_wr(pat_name)
-            wr = max(0.1, min(0.9, wr))
-            
-            if sig == "Big":
-                log_big += math.log(wr)
-                log_small += math.log(1 - wr)
-            else:
-                log_small += math.log(wr)
-                log_big += math.log(1 - wr)
-        
-        max_log = max(log_big, log_small)
-        p_big = math.exp(log_big - max_log)
-        p_small = math.exp(log_small - max_log)
-        posterior_big = p_big / (p_big + p_small)
-        
-        if posterior_big >= 0.5:
-            return "Big", posterior_big * 100
-        else:
-            return "Small", (1 - posterior_big) * 100
-    
-    def adapt_by_volatility(self, patterns, vol):
-        adjusted = []
-        for sig, conf, pat_name in patterns:
-            if sig is None: continue
-            
-            if vol > 0.7:
-                if pat_name in ["mean_rev", "extreme20", "zone", "mtf", "dgap"]:
-                    conf = min(95, conf * 1.3)
-                elif pat_name in ["markov2", "cycle", "alt", "pingpong"]:
-                    conf *= 0.7
-            elif vol < 0.3:
-                if pat_name in ["dragon_mo", "freq", "markov4", "markov3"]:
-                    conf = min(95, conf * 1.3)
-                elif pat_name in ["mean_rev", "break3"]:
-                    conf *= 0.8
-            
-            adjusted.append((sig, conf, pat_name))
-        return adjusted
-    
-    # =========================================================
-    # PATTERNS
-    # =========================================================
-    def p_extreme_20(self, arr):
-        if len(arr) < 20: return None, 0, "extreme20"
-        b20 = arr[-20:].count("Big")
-        if b20 >= 18: return "Small", 92, "extreme20"
-        if b20 <= 2: return "Big", 92, "extreme20"
-        if b20 >= 17: return "Small", 88, "extreme20"
-        if b20 <= 3: return "Big", 88, "extreme20"
-        return None, 0, "extreme20"
-    
-    def p_mean_reversion(self, arr):
-        if len(arr) < 15: return None, 0, "mean_rev"
-        b15 = arr[-15:].count("Big")
-        b10 = arr[-10:].count("Big")
-        if b15 >= 13: return "Small", 88, "mean_rev"
-        if b15 <= 2: return "Big", 88, "mean_rev"
-        if b15 >= 12: return "Small", 85, "mean_rev"
-        if b15 <= 3: return "Big", 85, "mean_rev"
-        if b15 >= 11 and b10 >= 7: return "Small", 82, "mean_rev"
-        if b15 <= 4 and b10 <= 3: return "Big", 82, "mean_rev"
-        return None, 0, "mean_rev"
-    
-    def p_dragon_ex(self, arr):
-        if len(arr) < 7: return None, 0, "dragon_ex"
-        streak = 1
-        for x in reversed(arr[:-1]):
-            if x == arr[-1]: streak += 1
-            else: break
-        if streak >= 9: return "Small" if arr[-1]=="Big" else "Big", 92, "dragon_ex"
-        if streak >= 8: return "Small" if arr[-1]=="Big" else "Big", 90, "dragon_ex"
-        if streak >= 7: return "Small" if arr[-1]=="Big" else "Big", 85, "dragon_ex"
-        return None, 0, "dragon_ex"
-    
-    def p_dragon_mo(self, arr):
-        if len(arr) < 5: return None, 0, "dragon_mo"
-        streak = 1
-        for x in reversed(arr[:-1]):
-            if x == arr[-1]: streak += 1
-            else: break
-        if streak == 6: return arr[-1], 85, "dragon_mo"
-        if streak == 5: return arr[-1], 82, "dragon_mo"
-        return None, 0, "dragon_mo"
-    
-    def p_zone(self, arr):
-        if len(arr) < 8: return None, 0, "zone"
-        b8 = arr[-8:].count("Big")
-        if b8 >= 7: return "Small", 82, "zone"
-        if b8 <= 1: return "Big", 82, "zone"
-        if b8 >= 6: return "Small", 78, "zone"
-        if b8 <= 2: return "Big", 78, "zone"
-        return None, 0, "zone"
-    
-    def p_markov4(self, arr):
-        if len(arr) < 25: return None, 0, "markov4"
-        last4 = tuple(arr[-4:])
-        next_after = []
-        for i in range(len(arr) - 5):
-            if tuple(arr[i:i+4]) == last4:
-                next_after.append(arr[i+4])
-        if len(next_after) < 2: return None, 0, "markov4"
-        counter = Counter(next_after)
-        most_common, count = counter.most_common(1)[0]
-        ratio = count / len(next_after)
-        if ratio >= 0.70:
-            return most_common, min(88, 70 + ratio * 20), "markov4"
-        return None, 0, "markov4"
-    
-    def p_frequency(self, arr):
-        if len(arr) < 20: return None, 0, "freq"
-        b20 = arr[-20:].count("Big")
-        b10 = arr[-10:].count("Big")
-        if b20 >= 15: return "Small", 82, "freq"
-        if b20 <= 5: return "Big", 82, "freq"
-        if b20 >= 14 and b10 >= 7: return "Small", 78, "freq"
-        if b20 <= 6 and b10 <= 3: return "Big", 78, "freq"
-        return None, 0, "freq"
-    
-    def p_double_gap(self, arr):
-        if len(arr) < 10: return None, 0, "dgap"
-        last = arr[-1]
-        gap = 0
-        for x in reversed(arr):
-            if x == last: gap += 1
-            else: break
-        if gap >= 6: return "Small" if last=="Big" else "Big", 85, "dgap"
-        if gap >= 5: return "Small" if last=="Big" else "Big", 80, "dgap"
-        return None, 0, "dgap"
-    
-    def p_mtf(self, arr):
-        if len(arr) < 30: return None, 0, "mtf"
-        b20 = arr[-20:].count("Big")
-        b10 = arr[-10:].count("Big")
-        b5 = arr[-5:].count("Big")
-        if b20 >= 16 and b10 >= 8 and b5 >= 4: return "Small", 88, "mtf"
-        if b20 <= 4 and b10 <= 2 and b5 <= 1: return "Big", 88, "mtf"
-        return None, 0, "mtf"
-    
-    def p_anti_cycle(self, arr):
-        if len(arr) < 8: return None, 0, "anti_cycle"
-        last8 = arr[-8:]
-        alt = sum(1 for i in range(len(last8)-1) if last8[i] != last8[i+1])
-        if alt >= 7:
-            nxt = "Small" if last8[-1]=="Big" else "Big"
-            return nxt, 78, "anti_cycle"
-        return None, 0, "anti_cycle"
-    
-    def p_markov3(self, arr):
-        if len(arr) < 20: return None, 0, "markov3"
-        last3 = tuple(arr[-3:])
-        next_after = []
-        for i in range(len(arr) - 4):
-            if tuple(arr[i:i+3]) == last3:
-                next_after.append(arr[i+3])
-        if len(next_after) < 2: return None, 0, "markov3"
-        counter = Counter(next_after)
-        most_common, count = counter.most_common(1)[0]
-        ratio = count / len(next_after)
-        if ratio >= 0.65:
-            return most_common, min(85, 68 + ratio * 20), "markov3"
-        return None, 0, "markov3"
-    
-    def p_markov2(self, arr):
-        if len(arr) < 15: return None, 0, "markov2"
-        last2 = tuple(arr[-2:])
-        next_after = []
-        for i in range(len(arr) - 3):
-            if tuple(arr[i:i+2]) == last2:
-                next_after.append(arr[i+2])
-        if len(next_after) < 3: return None, 0, "markov2"
-        counter = Counter(next_after)
-        most_common, count = counter.most_common(1)[0]
-        ratio = count / len(next_after)
-        if ratio >= 0.60:
-            return most_common, min(82, 65 + ratio * 20), "markov2"
-        return None, 0, "markov2"
-    
-    def p_cycle4(self, arr):
-        if len(arr) < 4: return None, 0, "cycle"
-        last4 = tuple(arr[-4:])
-        cycles = {
-            ("Big", "Big", "Small", "Big"): "Small",
-            ("Small", "Small", "Big", "Small"): "Big",
-            ("Big", "Small", "Big", "Small"): "Big",
-            ("Small", "Big", "Small", "Big"): "Small",
-            ("Big", "Big", "Big", "Small"): "Small",
-            ("Small", "Small", "Small", "Big"): "Big",
-            ("Big", "Small", "Small", "Big"): "Big",
-            ("Small", "Big", "Big", "Small"): "Small",
-            ("Big", "Big", "Small", "Small"): "Big",
-            ("Small", "Small", "Big", "Big"): "Small",
-        }
-        if last4 in cycles:
-            return cycles[last4], 70, "cycle"
-        return None, 0, "cycle"
-    
-    def p_break3(self, arr):
-        if len(arr) < 3: return None, 0, "break3"
-        last3 = arr[-3:]
-        if last3 == ["Big"] * 3: return "Small", 70, "break3"
-        if last3 == ["Small"] * 3: return "Big", 70, "break3"
-        return None, 0, "break3"
-    
-    def p_break4(self, arr):
-        if len(arr) < 4: return None, 0, "break4"
-        last4 = arr[-4:]
-        if last4 == ["Big"] * 4: return "Small", 78, "break4"
-        if last4 == ["Small"] * 4: return "Big", 78, "break4"
-        return None, 0, "break4"
-    
-    def p_alt(self, arr):
-        if len(arr) < 6: return None, 0, "alt"
-        alt = sum(1 for i in range(-5, -1) if arr[i] != arr[i+1])
-        if alt >= 4:
-            nxt = "Small" if arr[-1]=="Big" else "Big"
-            return nxt, 72, "alt"
-        return None, 0, "alt"
-    
-    def p_pingpong(self, arr):
-        if len(arr) < 6: return None, 0, "pingpong"
-        alt = sum(1 for i in range(-5, -1) if arr[i] != arr[i+1])
-        if alt >= 5:
-            nxt = "Small" if arr[-1]=="Big" else "Big"
-            return nxt, 70, "pingpong"
-        return None, 0, "pingpong"
-    
-    def p_gap(self, arr):
-        if len(arr) < 10: return None, 0, "gap"
-        last = arr[-1]
-        gap = 0
-        for x in reversed(arr):
-            if x == last: gap += 1
-            else: break
-        if gap >= 4:
-            return "Small" if last=="Big" else "Big", 72, "gap"
-        return None, 0, "gap"
-    
-    def p_time(self, arr):
-        if len(arr) < 10: return None, 0, "time"
-        hour = datetime.now().hour
-        if 9 <= hour <= 12:
-            b10 = arr[-10:].count("Big")
-            if b10 >= 7: return "Small", 68, "time"
-        elif 18 <= hour <= 21:
-            b10 = arr[-10:].count("Big")
-            if b10 <= 3: return "Big", 68, "time"
-        return None, 0, "time"
-    
-    def p_sum(self, arr):
-        if len(arr) < 5: return None, 0, "sum"
-        big = arr[-5:].count("Big")
-        if big >= 5: return "Small", 70, "sum"
-        if big <= 0: return "Big", 70, "sum"
-        return None, 0, "sum"
-    
-    def p_hl5(self, arr):
-        if len(arr) < 5: return None, 0, "hl5"
-        b5 = arr[-5:].count("Big")
-        if b5 >= 5: return "Small", 68, "hl5"
-        if b5 <= 0: return "Big", 68, "hl5"
-        return None, 0, "hl5"
-    
-    def p_pairs(self, arr):
-        if len(arr) < 20: return None, 0, "pairs"
-        bb = sum(1 for i in range(-19, 0) if arr[i]=="Big" and arr[i+1]=="Big")
-        ss = sum(1 for i in range(-19, 0) if arr[i]=="Small" and arr[i+1]=="Small")
-        if bb >= 8: return "Small", 68, "pairs"
-        if ss >= 8: return "Big", 68, "pairs"
-        return None, 0, "pairs"
-    
-    def p_palindrome(self, arr):
-        if len(arr) < 5: return None, 0, "palindrome"
-        l5 = arr[-5:]
-        if l5[:2] == l5[-2:][::-1]:
-            return "Small" if l5[-1]=="Big" else "Big", 65, "palindrome"
-        return None, 0, "palindrome"
-    
-    def p_block222(self, arr):
-        if len(arr) < 6: return None, 0, "block222"
-        bl = [arr[-6:-4], arr[-4:-2], arr[-2:]]
-        if bl[0] == bl[2] and bl[0] != bl[1]:
-            return bl[0][0], 65, "block222"
-        return None, 0, "block222"
-    
-    def p_last_rev(self, arr):
-        if len(arr) < 1: return None, 0, "last_rev"
-        return "Small" if arr[-1]=="Big" else "Big", 62, "last_rev"
-    
-    def p_symmetry(self, arr):
-        if len(arr) < 10: return None, 0, "symmetry"
-        last4 = arr[-4:]
-        prev4 = arr[-8:-4]
-        mirrored = [("Small" if x == "Big" else "Big") for x in prev4]
-        if last4 == mirrored:
-            nxt = "Small" if last4[-1] == "Big" else "Big"
-            return nxt, 68, "symmetry"
-        return None, 0, "symmetry"
-    
-    def p_cluster(self, arr):
-        if len(arr) < 8: return None, 0, "cluster"
-        last4 = arr[-4:]
-        if last4[:2] == last4[2:]:
-            nxt = "Small" if last4[0] == "Big" else "Big"
-            return nxt, 70, "cluster"
-        last8 = arr[-8:]
-        if last8[:4] == last8[4:]:
-            nxt = "Small" if last8[0] == "Big" else "Big"
-            return nxt, 72, "cluster"
-        return None, 0, "cluster"
-    
-    def p_triple(self, arr):
-        if len(arr) < 6: return None, 0, "triple"
-        last6 = arr[-6:]
-        if last6[:3] == last6[3:]:
-            nxt = "Small" if last6[0] == "Big" else "Big"
-            return nxt, 75, "triple"
-        return None, 0, "triple"
-    
-    # =========================================================
-    # 🎯 SIGNAL GENERATOR
-    # =========================================================
-    def generate_signal(self, arr):
-        vol = self.calculate_volatility()
-        
-        ml_sig, ml_conf, ml_reason = self.multi_layer_confirm(arr)
-        if ml_sig and ml_conf >= 90:
-            return ml_sig, ml_conf, f"🎯 {ml_reason}", [("multi_layer", ml_sig)], vol, 0
-        
-        raw_patterns = [
-            self.p_extreme_20(arr),
-            self.p_mean_reversion(arr),
-            self.p_dragon_ex(arr),
-            self.p_dragon_mo(arr),
-            self.p_zone(arr),
-            self.p_markov4(arr),
-            self.p_frequency(arr),
-            self.p_double_gap(arr),
-            self.p_mtf(arr),
-            self.p_anti_cycle(arr),
-            self.p_markov3(arr),
-            self.p_markov2(arr),
-            self.p_cycle4(arr),
-            self.p_break3(arr),
-            self.p_break4(arr),
-            self.p_alt(arr),
-            self.p_pingpong(arr),
-            self.p_gap(arr),
-            self.p_time(arr),
-            self.p_sum(arr),
-            self.p_hl5(arr),
-            self.p_pairs(arr),
-            self.p_palindrome(arr),
-            self.p_block222(arr),
-            self.p_last_rev(arr),
-            self.p_symmetry(arr),
-            self.p_cluster(arr),
-            self.p_triple(arr),
-        ]
-        
-        patterns = self.adapt_by_volatility(raw_patterns, vol)
-        valid = [(sig, conf, pat) for sig, conf, pat in patterns if sig is not None]
-        
-        if len(valid) < 2:
-            return None, 0, f"Low patterns ({len(valid)})", [], vol, 0
-        
-        if self.correlation_filter(valid):
-            return None, 0, "🚫 Correlation Conflict", [], vol, 0
-        
-        bay_signal, bay_conf = self.bayesian_inference(valid)
-        
-        big_score = 0.0
-        small_score = 0.0
-        reasons = []
-        
-        for sig, conf, pat_name in valid:
-            acc_wr = self.get_accelerated_wr(pat_name)
-            decay_w = self.time_decay_weight(pat_name)
-            online_w = self.online_learner.get_weight(pat_name)
-            
-            weight = (conf / 100.0) * (0.5 + acc_wr) * decay_w * online_w
-            
-            if sig == "Big":
-                big_score += weight
-                reasons.append(f"B({pat_name[:5]})")
-            else:
-                small_score += weight
-                reasons.append(f"S({pat_name[:5]})")
-        
-        total = big_score + small_score
-        if total < 1.0:
-            return None, 0, f"No pattern ({total:.2f})", [], vol, 0
-        
-        big_pct = big_score / total
-        vote_conf = max(big_pct, 1 - big_pct) * 100
-        vote_signal = "Big" if big_pct >= 0.5 else "Small"
-        
-        if abs(bay_conf - 50) < 5:
-            if vote_conf >= 75:
-                final_signal = vote_signal
-                final_conf = vote_conf * 0.9
-                fusion_type = "📊 Vote Only"
-            else:
-                return None, 0, f"Weak Vote ({vote_conf:.0f}%)", [], vol, 0
-        elif bay_signal == vote_signal:
-            final_signal = bay_signal
-            final_conf = max(bay_conf, vote_conf)
-            fusion_type = "🎯 Fusion"
-        else:
-            final_signal = bay_signal
-            final_conf = bay_conf * 0.85
-            fusion_type = "🧮 Bayesian"
-        
-        bias_mult = self.bias_conflict_filter(arr, final_signal)
-        final_conf *= bias_mult
-        bias_note = " ⚠️" if bias_mult < 1.0 else (" ✅" if bias_mult > 1.0 else "")
-        
-        reason = f"{fusion_type}{bias_note} | Bay:{bay_conf:.0f}% Vote:{vote_conf:.0f}%"
-        
-        patterns_used_2tuple = [(pat_name, sig) for sig, conf, pat_name in valid]
-        
-        return final_signal, final_conf, reason, patterns_used_2tuple, vol, bay_conf
-    
-    # =========================================================
-    # 🎯 ANALYZE ROUND (Loss Hidden + Win Simple)
-    # =========================================================
-    def analyze_round(self, period, number):
-        self.last_period = str(period)
-        self.last_number = number
-        current_result = "Big" if number >= 5 else "Small"
-        self.last_result = current_result
-        
-        if self.is_paused: return
-        
-        short = "..." + str(period)[-3:]
-        
-        # 1. Evaluate Previous Signal
-        if self.active_prediction:
-            win = (self.active_prediction == current_result)
-            
-            for pat_data in self.active_patterns_used:
-                pat_name = pat_data[0]
-                sig = pat_data[1]
-                
-                self.pattern_total[pat_name] += 1
-                if sig == current_result:
-                    self.pattern_win[pat_name] += 1
-                self.pattern_recent[pat_name].append(1 if sig == current_result else 0)
-                
-                t = self.pattern_total[pat_name]
-                if t > 0:
-                    self.pattern_wr[pat_name] = self.pattern_win[pat_name] / t
-                
-                self.online_learner.update(pat_name, sig == current_result)
-                self.data_engine.save_pattern_stat(
-                    pat_name, sig, current_result, sig == current_result
-                )
-            
-            if win:
+
+    # --------------------------------------------------------
+    # Evaluation (Win Only Shown - Unlimited Martingale)
+    # --------------------------------------------------------
+    def evaluate_previous(self, actual, current_period):
+        if not self.active_prediction:
+            return None
+
+        p = self.active_prediction
+        predicted = p["prediction"]
+        correct = predicted == actual
+        step = p["step"]
+
+        with self.lock:
+            if correct:
+                # ✅ WIN → Step Reset
                 self.total_wins += 1
                 self.consecutive_wins += 1
                 self.consecutive_losses = 0
-                
-                prev_step = self.current_step
-                step_key = min(prev_step, 3)
-                self.win_by_step[step_key] += 1
+                self.win_by_step[step] += 1
+                self.calibrator.update(p["probability"], True)
+
+                for model in p["models"].values():
+                    self.tracker.update(model["name"], model["signal"], actual)
+
+                if p.get("db_id"):
+                    self.db.evaluate_prediction(p["db_id"], actual)
+
                 self.current_step = 0
-                
-                # ✅ Win Only — Simple
+
+                # ✅ Win Only Message
                 self.send_telegram(
-                    f"✅ <b>WIN</b> — Step {prev_step + 1}\n"
-                    f"📊 WR: {self.get_wr():.1f}% | Win3: {self.get_win3_rate():.1f}%"
+                    f"✅ <b>WIN</b> — Step {step + 1}\n"
+                    f"🔢 {actual}\n"
+                    f"🔄 Step Reset → <b>Step 1</b>\n"
+                    f"📊 WR: {self.get_wr()*100:.1f}%"
                 )
             else:
-                # ❌ Loss — Silent
+                # ❌ LOSS → Step +1 (Silent & Unlimited)
                 self.total_losses += 1
                 self.consecutive_losses += 1
                 self.consecutive_wins = 0
+                self.loss_by_step[step] += 1
+                self.calibrator.update(p["probability"], False)
+
+                wrong = []
+                correct_models = []
+                for model in p["models"].values():
+                    if model["signal"] == actual:
+                        correct_models.append(model["name"])
+                    else:
+                        wrong.append(model["name"])
+                    self.tracker.update(model["name"], model["signal"], actual)
+
+                self.db.save_error(
+                    p.get("source_period"), predicted, actual,
+                    p["regime"], p["models"], wrong, correct_models
+                )
+
+                if p.get("db_id"):
+                    self.db.evaluate_prediction(p["db_id"], actual)
+
+                # Step Cap ဖယ်ရှားလိုက်ပြီဖြစ်သောကြောင့် အကန့်အသတ်မရှိ ဆက်လက်တိုးမည်
                 self.current_step += 1
-                # Telegram ပို့ မလုပ်
-            
+
             self.active_prediction = None
-            self.active_patterns_used = []
-        
-        # 2. Save & Append
-        self.data_engine.save_result(period, number, current_result)
-        self.history.append(current_result)
-        
-        # 3. Warm-up
-        if len(self.history) < 20:
-            self.send_telegram(f"⏳ Warm-up {short} ({len(self.history)}/20)")
-            return
-        
-        # 4. Trap Filter
+
+        return correct
+
+    # --------------------------------------------------------
+    # Generate
+    # --------------------------------------------------------
+    def generate(self, source_period):
         arr = list(self.history)
-        if self.trap_filter(arr):
-            self.total_skips += 1
-            self.send_telegram(f"⏸️ <b>SKIP</b> {short}\n🚨 Trap")
-            return
-        
-        # 5. Signal
-        signal, conf, reason, patterns_used, vol, bay = self.generate_signal(arr)
-        
-        self.last_signal = signal if signal else "SKIP"
-        self.last_reason = reason
-        self.active_bayesian = bay
-        
-        # 6. Threshold
-        threshold = self.get_dynamic_threshold()
-        
-        if signal is None or conf < threshold:
-            self.total_skips += 1
-            self.send_telegram(f"⏸️ <b>SKIP</b> {short}\n{reason}")
-            return
-        
-        # 7. Emit Signal
-        self.active_prediction = signal
-        self.active_patterns_used = patterns_used
-        self.total_signals += 1
-        
-        next_bet = BASE_BET * (2 ** self.current_step)
-        
-        stars = "⭐" * min(int(conf / 20), 5)
-        self.send_telegram(
-            f"🚀 <b>HYBRID v4.4.4 SIGNAL</b> {stars}\n"
-            f"📅 Period: {short}\n"
-            f"📌 {reason}\n"
-            f"🎯 <b>{signal.upper()}</b>\n"
-            f"💰 Step {self.current_step+1} ({2**self.current_step}x) = ${next_bet:.2f}"
+        if len(arr) < MIN_HISTORY:
+            return {
+                "signal": None, "probability": 0.0, "edge": 0.0,
+                "reason": "WARMUP", "regime": "UNKNOWN",
+                "models": {}, "groups": {},
+            }
+
+        regime = self.regime_detector.detect(arr)
+        models = self.pattern_engine.predict(arr, regime)
+
+        if not models:
+            return {
+                "signal": None, "probability": 0.0, "edge": 0.0,
+                "reason": "NO_MODEL_EVIDENCE", "regime": regime["name"],
+                "models": {}, "groups": {},
+            }
+
+        fusion = self.fusion.combine(models, regime)
+        raw_p = fusion["raw_probability"]
+        calibrated = self.calibrator.calibrated(raw_p)
+        edge = abs(calibrated - 0.5)
+
+        ok, filter_reason = self.signal_filter.decide(
+            fusion, calibrated, regime
         )
-    
-    def get_dynamic_threshold(self):
-        total = self.total_wins + self.total_losses
-        if total < 10: return 65
-        wr = self.get_wr()
-        if wr >= 75: return 72
-        elif wr >= 65: return 70
-        elif wr >= 55: return 68
-        else: return 65
-    
+
+        if not ok:
+            return {
+                "signal": None, "probability": calibrated, "edge": edge,
+                "reason": filter_reason, "regime": regime["name"],
+                "models": models, "groups": fusion["groups"],
+                "agreement": fusion["agreement"],
+                "disagreement": fusion["disagreement"],
+            }
+
+        reason = (
+            f"EDGE_OK | {regime['name']} | "
+            f"agree={fusion['agreement']*100:.0f}%"
+        )
+        return {
+            "signal": fusion["prediction"],
+            "probability": calibrated,
+            "edge": edge,
+            "reason": reason,
+            "regime": regime["name"],
+            "models": models,
+            "groups": fusion["groups"],
+            "agreement": fusion["agreement"],
+            "disagreement": fusion["disagreement"],
+            "source_period": str(source_period),
+        }
+
+    # --------------------------------------------------------
+    # Round
+    # --------------------------------------------------------
+    def analyze_round(self, period, number):
+        result = number_to_result(number)
+        if result is None:
+            print(f"⚠️ Invalid: period={period}, number={number}", flush=True)
+            return
+
+        with self.lock:
+            if self.db.has_period(period):
+                return
+
+            # 1) Evaluate previous (Win Only Shown)
+            self.evaluate_previous(result, str(period))
+
+            # 2) Save
+            self.db.save_result(period, number, result)
+            self.history.append(result)
+            self.last_period = str(period)
+            self.last_number = int(number)
+            self.last_result = result
+
+            if self.is_paused:
+                self.last_signal = "PAUSED"
+                self.last_reason = "PAUSED"
+                return
+
+            # 3) Generate
+            prediction = self.generate(period)
+            self.last_signal = (
+                prediction["signal"] if prediction["signal"] else "SKIP"
+            )
+            self.last_reason = prediction["reason"]
+            self.last_probability = prediction["probability"]
+            self.last_edge = prediction["edge"]
+            self.last_regime = prediction["regime"]
+
+            if prediction["signal"] is None:
+                self.total_skips += 1
+                self.send_telegram(
+                    f"⏸️ <b>SKIP</b>\n"
+                    f"📅 {period}\n"
+                    f"📌 {prediction['reason']}\n"
+                    f"📊 Prob: {prediction['probability']*100:.1f}% | "
+                    f"Edge: {prediction['edge']*100:.1f}pp"
+                )
+                return
+
+            # 4) Signal
+            self.total_signals += 1
+            target_period = self.estimate_next_period(period)
+
+            model_list = {
+                name: {
+                    "name": model["name"],
+                    "group": model["group"],
+                    "signal": model["signal"],
+                    "probability": model["probability"],
+                    "support": model["support"],
+                    "metadata": model.get("metadata", {}),
+                }
+                for name, model in prediction["models"].items()
+            }
+
+            record = {
+                "source_period": str(period),
+                "target_period": str(target_period) if target_period else None,
+                "prediction": prediction["signal"],
+                "probability": prediction["probability"],
+                "edge": prediction["edge"],
+                "reason": prediction["reason"],
+                "regime": prediction["regime"],
+                "entropy": self.regime_detector.detect(list(self.history))["entropy"],
+                "transition_rate": transition_rate(list(self.history)[-20:]),
+                "models": model_list,
+                "groups": prediction.get("groups", {}),
+            }
+
+            db_id = self.db.save_prediction(record)
+
+            self.active_prediction = {
+                **record,
+                "db_id": db_id,
+                "step": self.current_step,
+            }
+
+            # ✅ Signal Message (Shows current step multiplier)
+            self.send_telegram(
+                f"🚀 <b>HYBRID V6.1 SIGNAL</b>\n"
+                f"📅 Period: {period}\n"
+                f"🎯 <b>{prediction['signal'].upper()}</b>\n"
+                f"💰 <b>Step {self.current_step + 1}</b> "
+                f"({2**self.current_step}x)\n"
+                f"📊 Prob: {prediction['probability']*100:.1f}% | "
+                f"Edge: {prediction['edge']*100:.1f}pp\n"
+                f"📌 {prediction['regime']} | "
+                f"Agree: {prediction.get('agreement', 0)*100:.0f}%"
+            )
+
+    @staticmethod
+    def estimate_next_period(period):
+        try:
+            return str(int(str(period)) + 1)
+        except Exception:
+            return None
+
+    # --------------------------------------------------------
+    # Stats
+    # --------------------------------------------------------
     def get_wr(self):
-        t = self.total_wins + self.total_losses
-        return (self.total_wins/t*100) if t>0 else 0.0
-    
+        total = self.total_wins + self.total_losses
+        return self.total_wins / total if total else 0.0
+
     def get_win3_rate(self):
-        t = sum(self.win_by_step.values())
-        if t == 0: return 0.0
-        w3 = self.win_by_step[0] + self.win_by_step[1] + self.win_by_step[2]
-        return (w3/t)*100
-    
-    def auto_optimize(self):
-        for pat, wr in list(self.pattern_wr.items()):
-            total = self.pattern_total[pat]
-            if total < 5: continue
-            acc_wr = self.get_accelerated_wr(pat)
-            if acc_wr > wr + 0.1:
-                self.pattern_weight[pat] = min(2.0, self.pattern_weight[pat] * 1.15)
-            elif acc_wr < wr - 0.1:
-                self.pattern_weight[pat] = max(0.3, self.pattern_weight[pat] * 0.85)
-        
-        top = sorted(self.pattern_wr.items(), key=lambda x: x[1], reverse=True)[:5]
-        top_str = "\n".join([f"{p}: {w*100:.0f}%" for p, w in top])
-        
-        self.send_telegram(
-            f"🔧 <b>OPTIMIZE</b>\n\n🏆 Top 5:\n{top_str}\n\n"
-            f"📊 WR: {self.get_wr():.1f}%\n🎯 Win3: {self.get_win3_rate():.1f}%"
+        wins = (
+            self.win_by_step[0] + self.win_by_step[1] + self.win_by_step[2]
         )
+        total = self.total_wins
+        return wins / total if total else 0.0
+
+    # Step >= 4 (index >= 3) အကြိမ်အရေအတွက်အားလုံးပေါင်း
+    def get_win_s4_plus(self):
+        return sum(count for step, count in self.win_by_step.items() if step >= 3)
+
+    def dashboard_state(self):
+        arr = list(self.history)
+        regime = self.regime_detector.detect(arr)
+        return {
+            "version": "HYBRID V6.1",
+            "history": len(arr),
+            "signals": self.total_signals,
+            "skips": self.total_skips,
+            "wins": self.total_wins,
+            "losses": self.total_losses,
+            "wr": self.get_wr(),
+            "win3": self.get_win3_rate(),
+            "step": self.current_step + 1,
+            "paused": self.is_paused,
+            "last_period": self.last_period,
+            "last_number": self.last_number,
+            "last_result": self.last_result,
+            "last_signal": self.last_signal,
+            "last_reason": self.last_reason,
+            "last_probability": self.last_probability,
+            "last_edge": self.last_edge,
+            "regime": regime,
+            "db": self.db.stats(),
+            "api_errors": self.api_errors,
+            "last_api_error": self.last_api_error,
+        }
 
 
-# ==========================================
-# TELEGRAM COMMANDS
-# ==========================================
+# ============================================================
+# TELEGRAM COMMAND LOOP
+# ============================================================
 def poll_telegram(agent):
-    global BASE_BET          # ✅ FIX — Function အပေါ်ဆုံးမှာ
-    
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        print("ℹ️ Telegram disabled", flush=True)
+        return
+
     try:
         requests.get(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook?drop_pending_updates=true",
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook",
+            params={"drop_pending_updates": True},
             timeout=10
         )
-    except: pass
-    
+    except Exception:
+        pass
+
     offset = 0
     while True:
         try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={offset}&timeout=20"
-            r = requests.get(url, timeout=25)
-            if r.status_code == 200:
-                for u in r.json().get("result", []):
-                    offset = u["update_id"] + 1
-                    m = u.get("message", {}) or u.get("edited_message", {})
-                    cid = str(m.get("chat", {}).get("id", ""))
-                    txt = m.get("text", "").strip().lower()
-                    if cid != CHAT_ID: continue
-                    
-                    if txt == "/status":
-                        agent.send_telegram(
-                            f"🚀 <b>HYBRID v4.4.4 STATUS</b>\n\n"
-                            f"⚙️ {'PAUSED 🛑' if agent.is_paused else 'RUNNING 🟢'}\n"
-                            f"Signals: {agent.total_signals} | Skips: {agent.total_skips}\n"
-                            f"✅ W: {agent.total_wins} | ❌ L: {agent.total_losses}\n"
-                            f"📈 WR: {agent.get_wr():.2f}%\n"
-                            f"🎯 Win3: {agent.get_win3_rate():.1f}%\n"
-                            f"💰 Step: {agent.current_step+1} ({2**agent.current_step}x)\n"
-                            f"📊 Base Bet: ${BASE_BET}"
+            r = requests.get(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
+                params={"offset": offset, "timeout": 20},
+                timeout=25
+            )
+            if r.status_code != 200:
+                time.sleep(2)
+                continue
+            for u in r.json().get("result", []):
+                offset = u["update_id"] + 1
+                msg = u.get("message") or u.get("edited_message") or {}
+                cid = str(msg.get("chat", {}).get("id", ""))
+                if cid != str(CHAT_ID): continue
+                txt = str(msg.get("text", "")).strip().lower()
+
+                if txt == "/status":
+                    s = agent.dashboard_state()
+                    wbs = agent.win_by_step
+                    agent.send_telegram(
+                        f"🚀 <b>HYBRID V6.1 STATUS</b>\n\n"
+                        f"Mode: {'PAUSED 🛑' if s['paused'] else 'RUNNING 🟢'}\n"
+                        f"History: {s['history']}\n"
+                        f"Signals: {s['signals']} | Skips: {s['skips']}\n"
+                        f"W: {s['wins']} | L: {s['losses']}\n"
+                        f"📊 WR: <b>{s['wr']*100:.2f}%</b>\n"
+                        f"🎯 Win≤3: {s['win3']*100:.1f}%\n"
+                        f"💰 <b>Step: {s['step']}</b>\n\n"
+                        f"Regime: {s['regime']['name']}\n"
+                        f"Entropy: {s['regime']['entropy']:.3f}\n\n"
+                        f"<b>Win by Step:</b>\n"
+                        f"S1:{wbs[0]} S2:{wbs[1]} S3:{wbs[2]}\n"
+                        f"S4+:{agent.get_win_s4_plus()}"
+                    )
+                elif txt == "/patterns":
+                    rows = agent.tracker.all_stats()
+                    if not rows:
+                        agent.send_telegram("No data yet.")
+                        continue
+                    lines = ["🧠 <b>PATTERN STATS</b>"]
+                    for row in rows[:12]:
+                        lines.append(
+                            f"{row['name']}: "
+                            f"{row['wr']*100:.1f}% "
+                            f"n={row['total']} "
+                            f"recent={row['recent_wr']*100:.1f}%"
                         )
-                    elif txt == "/patterns":
-                        s = "📈 <b>Pattern WR</b>\n"
-                        for k, v in sorted(agent.pattern_wr.items(), key=lambda x: x[1], reverse=True)[:15]:
-                            t = agent.pattern_total[k]
-                            acc = agent.get_accelerated_wr(k)
-                            s += f"{k}: {v*100:.0f}% | Acc:{acc*100:.0f}% ({t}x)\n"
-                        agent.send_telegram(s)
-                    elif txt == "/pause":
-                        agent.is_paused = True
-                        agent.send_telegram("🛑 Paused")
-                    elif txt == "/resume":
-                        agent.is_paused = False
-                        agent.send_telegram("🟢 Resumed")
-                    elif txt == "/reset":
-                        agent.current_step = 0
-                        agent.send_telegram("🔄 Step Reset")
-                    elif txt.startswith("/base"):
-                        parts = txt.split()
-                        if len(parts) == 2:
-                            try:
-                                BASE_BET = float(parts[1])   # ✅ global မလို — အပေါ်မှာ ရှိပြီး
-                                agent.send_telegram(f"✅ Base Bet = ${BASE_BET}")
-                            except:
-                                agent.send_telegram("❌ Invalid")
-                        else:
-                            agent.send_telegram(f"Base Bet: ${BASE_BET}")
+                    agent.send_telegram("\n".join(lines))
+                elif txt == "/pause":
+                    agent.is_paused = True
+                    agent.send_telegram("🛑 Paused")
+                elif txt == "/resume":
+                    agent.is_paused = False
+                    agent.send_telegram("🟢 Resumed")
+                elif txt == "/reset":
+                    agent.current_step = 0
+                    agent.consecutive_losses = 0
+                    agent.send_telegram("🔄 Step Reset → 1")
+                elif txt == "/help":
+                    agent.send_telegram(
+                        "🤖 <b>Commands</b>\n"
+                        "/status - Full stats\n"
+                        "/patterns - Pattern stats\n"
+                        "/pause - Pause\n"
+                        "/resume - Resume\n"
+                        "/reset - Reset step"
+                    )
         except Exception as e:
-            print(f"TG Poll: {e}", flush=True)
+            print(f"TG error: {e}", flush=True)
         time.sleep(1)
 
 
-# ==========================================
-# MAIN LOOP
-# ==========================================
+# ============================================================
+# API CLIENT
+# ============================================================
+class ResultAPIClient:
+    def __init__(self):
+        self.session = requests.Session()
+
+    def fetch_latest(self):
+        headers = {
+            "accept": "application/json, text/plain, */*",
+            "content-type": "application/json;charset=UTF-8",
+            "user-agent": "Mozilla/5.0",
+        }
+        if API_AUTH:
+            headers["authorization"] = f"Bearer {API_AUTH}"
+        if API_ORIGIN:
+            headers["origin"] = API_ORIGIN
+        if API_REFERER:
+            headers["referer"] = API_REFERER
+
+        payload = {
+            "pageSize": 10, "pageNo": 1,
+            "typeId": API_TYPE_ID, "language": API_LANGUAGE,
+            "timestamp": int(time.time()),
+        }
+        if API_RANDOM: payload["random"] = API_RANDOM
+        if API_SIGNATURE: payload["signature"] = API_SIGNATURE
+
+        r = self.session.post(
+            API_URL, headers=headers, json=payload,
+            timeout=REQUEST_TIMEOUT
+        )
+        r.raise_for_status()
+        data = r.json()
+        items = data.get("data", {}).get("list", []) if isinstance(data, dict) else []
+        if not items:
+            return None
+        latest = items[0]
+        raw_period = latest.get("issueNumber") or latest.get("period") or latest.get("issue")
+        raw_number = latest.get("number") if latest.get("number") is not None else latest.get("num")
+        if raw_period is None or raw_number is None:
+            return None
+        return {
+            "raw_period": str(raw_period),
+            "period": self.apply_offset(raw_period),
+            "number": int(raw_number),
+        }
+
+    @staticmethod
+    def apply_offset(raw_period):
+        try:
+            return str(int(str(raw_period)) + PERIOD_OFFSET)
+        except Exception:
+            return str(raw_period)
+
+
+# ============================================================
+# MAIN BOT LOOP
+# ============================================================
 def run_bot():
-    print("🚀 HYBRID v4.4.4 (Syntax Fixed) starting...", flush=True)
-    agent = HybridEngineV444()
-    threading.Thread(target=poll_telegram, args=(agent,), daemon=True).start()
-    
-    last_period = ""
-    rounds_since_opt = 0
-    headers = {
-        "accept": "application/json, text/plain, */*",
-        "authorization": f"Bearer {API_AUTH}",
-        "content-type": "application/json;charset=UTF-8",
-        "origin": "https://6win598.com",
-        "referer": "https://6win598.com/",
-        "user-agent": "Mozilla/5.0"
-    }
-    
+    print("🚀 HYBRID V6.1 starting...", flush=True)
+    agent = HybridV61()
+    api = ResultAPIClient()
+
+    threading.Thread(
+        target=poll_telegram, args=(agent,), daemon=True
+    ).start()
+
+    last_period = None
     while True:
         try:
-            payload = {
-                "pageSize": 10, "pageNo": 1, "typeId": 30, "language": 7,
-                "random": "036263f367384d418be07465793c8da8",
-                "signature": "55F4FD150F15F090B943374F3C9BE78B",
-                "timestamp": int(time.time())
-            }
-            r = requests.post(API_URL, headers=headers, json=payload, timeout=10)
-            if r.status_code == 200:
-                d = r.json()
-                lst = d.get("data", {}).get("list", [])
-                if lst:
-                    latest = lst[0]
-                    raw = str(latest.get("issueNumber"))
-                    period = str(int(raw) + 2)
-                    number = int(latest.get("number"))
-                    
-                    if period != last_period:
-                        last_period = period
-                        print(f"🚀 Sync {period} → {number}", flush=True)
-                        agent.analyze_round(period, number)
-                        
-                        rounds_since_opt += 1
-                        if rounds_since_opt >= 50:
-                            agent.auto_optimize()
-                            rounds_since_opt = 0
+            item = api.fetch_latest()
+            if item:
+                period = item["period"]
+                number = item["number"]
+                if period != last_period:
+                    last_period = period
+                    print(f"📡 Sync {period} → {number}", flush=True)
+                    agent.analyze_round(period, number)
         except Exception as e:
-            print(f"API Err: {e}", flush=True)
-        time.sleep(1.5)
+            agent.api_errors += 1
+            agent.last_api_error = str(e)
+            print(f"⚠️ API error: {e}", flush=True)
+        time.sleep(POLL_SECONDS)
 
 
-threading.Thread(target=run_bot, daemon=True).start()
+# ============================================================
+# DASHBOARD
+# ============================================================
+HTML = r"""
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="15">
+<title>HYBRID V6.1</title>
+<style>
+body { margin:0; background:#0b1020; color:#e9f0ff; font-family:system-ui,Arial,sans-serif; padding:14px; }
+h1 { color:#00ffff; margin-bottom:6px; }
+.small { color:#9eabc4; }
+.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; }
+.card { background:#151d33; border:1px solid #2b3858; border-radius:14px; padding:14px; margin:10px 0; }
+.value { font-size:28px; font-weight:800; }
+.green { color:#00ff88; } .red { color:#ff5566; }
+.yellow { color:#ffe600; } .cyan { color:#00ffff; }
+.mono { font-family:monospace; letter-spacing:2px; }
+table { width:100%; border-collapse:collapse; }
+td,th { padding:8px; border-bottom:1px solid #2b3858; text-align:left; }
+</style>
+</head>
+<body>
+<h1>🚀 HYBRID V6.1</h1>
+<div class="small">Signal Only + Unlimited Step Tracking + Win Only Display</div>
 
+{% if not agent %}
+<div class="card">Starting...</div>
+{% else %}
+<div class="grid">
+  <div class="card">
+    <div>Mode</div>
+    <div class="value">{{ "PAUSED 🛑" if agent.is_paused else "RUNNING 🟢" }}</div>
+  </div>
+  <div class="card">
+    <div>Win Rate</div>
+    <div class="value green">{{ "%.2f"|format(agent.get_wr()*100) }}%</div>
+  </div>
+  <div class="card">
+    <div>Signals / Skips</div>
+    <div class="value">{{ agent.total_signals }} / {{ agent.total_skips }}</div>
+  </div>
+  <div class="card">
+    <div>W / L</div>
+    <div class="value">
+      <span class="green">{{ agent.total_wins }}</span> /
+      <span class="red">{{ agent.total_losses }}</span>
+    </div>
+  </div>
+  <div class="card">
+    <div>Current Step</div>
+    <div class="value yellow">{{ agent.current_step + 1 }}</div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>📊 Win by Step</h2>
+  <p>S1: {{ agent.win_by_step[0] }} | S2: {{ agent.win_by_step[1] }} |
+     S3: {{ agent.win_by_step[2] }} | S4+: {{ agent.get_win_s4_plus() }}</p>
+  <p>Win ≤3: <b class="cyan">{{ "%.1f"|format(agent.get_win3_rate()*100) }}%</b></p>
+</div>
+
+<div class="card">
+  <h2>🎯 Last Signal</h2>
+  <p>Period: <b>{{ agent.last_period }}</b></p>
+  <p>Result: <b>{{ agent.last_number }} → {{ agent.last_result }}</b></p>
+  <p>Signal: <b class="cyan">{{ agent.last_signal }}</b></p>
+  <p>Probability: <b>{{ "%.1f"|format(agent.last_probability*100) }}%</b></p>
+  <p>Edge: <b>{{ "%.1f"|format(agent.last_edge*100) }}pp</b></p>
+  <p>Reason: {{ agent.last_reason }}</p>
+</div>
+
+<div class="card">
+  <h2>📊 Pattern Performance</h2>
+  <table>
+    <tr><th>Pattern</th><th>Total</th><th>WR</th><th>Recent</th></tr>
+    {% for row in agent.tracker.all_stats()[:15] %}
+    <tr>
+      <td>{{ row.name }}</td>
+      <td>{{ row.total }}</td>
+      <td>{{ "%.1f"|format(row.wr*100) }}%</td>
+      <td>{{ "%.1f"|format(row.recent_wr*100) }}%</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card">
+  <h2>📜 Last 30 Results</h2>
+  <div class="mono">
+    {% for row in agent.db.get_last_rows(30) %}
+      {{ "B" if row.result == "Big" else "S" }}
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+</body>
+</html>
+"""
+
+@app.route("/")
+def home():
+    return render_template_string(HTML, agent=global_agent)
+
+@app.route("/api/status")
+def api_status():
+    if not global_agent:
+        return jsonify({"status": "starting"})
+    return jsonify(global_agent.dashboard_state())
+
+@app.route("/api/patterns")
+def api_patterns():
+    if not global_agent:
+        return jsonify([])
+    return jsonify(global_agent.tracker.all_stats())
+
+
+# ============================================================
+# START
+# ============================================================
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    threading.Thread(target=run_bot, daemon=True).start()
+    app.run(host="0.0.0.0", port=PORT, debug=False)
