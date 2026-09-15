@@ -17,7 +17,6 @@ CHAT_ID = "-1004402480797"
 API_URL = "https://6lotteryapi.com/api/webapi/GetNoaverageEmerdList"
 API_AUTH = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOiIxNzg3OTgxNTA5IiwibmJmIjoiMTc4Nzk4MTUwOSIsImV4cCI6IjE3ODc5ODMzMDkiLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL2V4cGlyYXRpb24iOiI4LzI5LzIwMjYgMTI6MzE2NDkgUE0iLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL3JvbGUiOiJBY2Nlc3NfVG9rZW4iLCJVc2VySWQiOiIxMDEyMjEzIiwiVXNlck5hbWUiOiI5NTk3NDA5MzkzNzAiLCJVc2VyUGhvdG8iOiI5IiwiTmlja05hbWUiOiJUaGVrR3lpIiwiQW1vdW50IjoiODcuMzAiLCJJbnRlZ3JhbCI6IjAiLCJMb2dpbk1hcmsiOiJINSIsImxvZ2luVGltZSI6IjcvMjkvMjAyNiAxMjowMTo0OSBQTSIsImxvZ2luSVBBZGRyZXNzIjoiNDUuNDEuMTA0LjI0MCIsImRiTnVtYmVyIjoiMCIsIklzdmFsaWRhdG9yIjoiMCIsIktleUNvZGUiOiIzMjMzMiIsImRva2VuVHlwZSI6IjJBY2Nlc3NfVG9rZW4iLCJob25lVHlwZSI6IjAiLCJVc2VyVHlwZSI6IjAiLCJVc2VyTmFtZ2UiOiIuIiwiaXNzIjoiand0SXNzdWVyIiwiYXVkIjoibG90dGVyeVRpY2tldCJ9.ZL0Y9gexUTCsKwWeZhCLAAw8AABEYJt0GnIzIviMG4g"
 
-INITIAL_BANKROLL = 1000
 BASE_BET = 1.0
 
 app = Flask(__name__)
@@ -31,13 +30,12 @@ global_agent = None
 def home():
     global global_agent
     if not global_agent:
-        return "<h3>🚀 HYBRID v4.4 starting...</h3>"
+        return "<h3>🚀 HYBRID v4.4.3 starting...</h3>"
     
     a = global_agent
     total = a.total_wins + a.total_losses
     wr = (a.total_wins / total * 100) if total > 0 else 0.0
     win3 = a.get_win3_rate()
-    dd = (INITIAL_BANKROLL - a.bankroll) / INITIAL_BANKROLL * 100
     
     last_20 = " ".join([("B" if r == "Big" else "S") for r in list(a.history)[-20:]])
     
@@ -47,30 +45,24 @@ def home():
         acc_wr = a.get_accelerated_wr(k)
         pat_rows += f"<tr><td>{k}</td><td>{v*100:.0f}%</td><td>{acc_wr*100:.0f}%</td><td>{t}</td></tr>"
     
-    dd_color = "green" if dd < 5 else ("yellow" if dd < 10 else "red")
-    
     return f"""
-    <html><head><title>HYBRID v4.4</title>
+    <html><head><title>HYBRID v4.4.3</title>
     <meta http-equiv="refresh" content="15">
     <style>
     body{{background:#0a0e27;color:#0ff;font-family:monospace;padding:20px}}
     h1{{color:#0ff;text-shadow:0 0 10px #0ff}}
     .box{{background:#1a1f3a;border:1px solid #0ff;padding:15px;margin:10px 0;border-radius:8px}}
     .big{{font-size:32px;color:#0f0;font-weight:bold}}
-    .red{{color:#f44}} .green{{color:#0f0}} .yellow{{color:#ff0}}
     .nums{{font-size:18px;color:#ff0;letter-spacing:3px}}
     table{{width:100%;border-collapse:collapse}}
     th,td{{padding:6px;border:1px solid #0ff;text-align:left;font-size:12px}}
     th{{background:#0ff;color:#000}}
     </style></head><body>
-    <h1>🚀 HYBRID v4.4 (God-Level)</h1>
+    <h1>🚀 HYBRID v4.4.3</h1>
     
     <div class="box">
       <h2>📊 Performance</h2>
       <p>Status: <b>{'PAUSED 🛑' if a.is_paused else 'RUNNING 🟢'}</b></p>
-      <p>Safety: <b class="{'red' if a.safety_mode else 'green'}">{'🛡️' if a.safety_mode else 'OFF'}</b></p>
-      <p>Recovery: <b class="{'yellow' if a.recovery_rounds > 0 else 'green'}">{a.recovery_rounds if a.recovery_rounds > 0 else 'OFF'}</b></p>
-      <p>Valve: <b class="{'red' if a.safety_valve_active else 'green'}">{'🛡️' if a.safety_valve_active else 'OFF'}</b></p>
       <p>Signals: {a.total_signals} | Skips: {a.total_skips}</p>
       <p>W: {a.total_wins} | L: {a.total_losses}</p>
       <p>Win Rate: <span class="big">{wr:.2f}%</span></p>
@@ -80,11 +72,10 @@ def home():
     </div>
     
     <div class="box">
-      <h2>💰 Bankroll</h2>
-      <p>Balance: <b>${a.bankroll:.2f}</b></p>
-      <p>Drawdown: <b class="{dd_color}">{dd:.2f}%</b></p>
-      <p>Session P/L: <b>${a.bankroll - a.session_start_bankroll:+.2f}</b></p>
-      <p>Next Bet: <b>${a.next_bet:.2f}</b> (Risk-Adj Kelly)</p>
+      <h2>💰 Martingale</h2>
+      <p>Base Bet: <b>${BASE_BET:.2f}</b></p>
+      <p>Current Step: <b>{a.current_step + 1}</b></p>
+      <p>Next Bet: <b>${BASE_BET * (2**a.current_step):.2f}</b></p>
     </div>
     
     <div class="box">
@@ -93,7 +84,7 @@ def home():
     </div>
     
     <div class="box">
-      <h2>📈 Patterns (All | Accelerated | Count)</h2>
+      <h2>📈 Patterns</h2>
       <table>
         <tr><th>Pattern</th><th>All WR</th><th>Accel WR</th><th>Count</th></tr>
         {pat_rows}
@@ -104,7 +95,6 @@ def home():
       <h2>📅 Last Period</h2>
       <p>{a.last_period} → {a.last_number} → {a.last_result}</p>
       <p>Signal: {a.last_signal}</p>
-      <p>Reason: {a.last_reason}</p>
     </div>
     </body></html>
     """
@@ -130,10 +120,10 @@ class OnlineLearner:
 
 
 # ==========================================
-# DATA ENGINE (SQLite)
+# DATA ENGINE
 # ==========================================
 class DataEngine:
-    def __init__(self, db_path='wingo_v44.db'):
+    def __init__(self, db_path='wingo_v443.db'):
         self.db_path = db_path
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.cursor = self.conn.cursor()
@@ -144,20 +134,6 @@ class DataEngine:
                 period TEXT UNIQUE,
                 number INTEGER,
                 result TEXT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS signals (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                period TEXT,
-                signal TEXT,
-                confidence REAL,
-                bayesian REAL,
-                patterns TEXT,
-                actual TEXT,
-                win INTEGER,
-                step INTEGER,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         ''')
@@ -183,16 +159,6 @@ class DataEngine:
         except Exception as e:
             print(f"DB Save Err: {e}", flush=True)
     
-    def save_signal(self, period, signal, confidence, bayesian, patterns, actual, win, step):
-        try:
-            self.cursor.execute('''
-                INSERT INTO signals (period, signal, confidence, bayesian, patterns, actual, win, step)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (str(period), signal, confidence, bayesian, patterns, actual, 1 if win else 0, step))
-            self.conn.commit()
-        except Exception as e:
-            print(f"DB Signal Err: {e}", flush=True)
-    
     def save_pattern_stat(self, pattern, signal, actual, win):
         try:
             self.cursor.execute('''
@@ -215,9 +181,9 @@ class DataEngine:
 
 
 # ==========================================
-# 🚀 HYBRID v4.4 ENGINE (God-Level)
+# 🚀 HYBRID v4.4.3 ENGINE
 # ==========================================
-class HybridEngineV44:
+class HybridEngineV443:
     def __init__(self):
         global global_agent
         global_agent = self
@@ -234,12 +200,9 @@ class HybridEngineV44:
         self.active_patterns_used = []
         self.active_bayesian = 0
         self.is_paused = False
-        self.safety_mode = False
-        self.safety_valve_active = False
-        self.profit_lock_active = False
-        self.recovery_rounds = 0
         self.consecutive_losses = 0
         self.consecutive_wins = 0
+        self.trap_count = 0
         
         self.last_period = "None"
         self.last_number = 0
@@ -253,16 +216,6 @@ class HybridEngineV44:
         self.total_losses = 0
         self.total_skips = 0
         self.win_by_step = {0: 0, 1: 0, 2: 0, 3: 0}
-        
-        # Bankroll
-        self.bankroll = INITIAL_BANKROLL
-        self.next_bet = BASE_BET
-        
-        # Session
-        self.session_start_bankroll = INITIAL_BANKROLL
-        self.session_profit = 0
-        self.session_trades = 0
-        self.session_max_profit = 0
         
         # Pattern
         self.pattern_stats = Counter()
@@ -291,12 +244,10 @@ class HybridEngineV44:
             print(f"❌ TG: {e}", flush=True)
     
     # =========================================================
-    # 🆕 ACCELERATED WR (Fast-Response — 0X Concept)
+    # ACCELERATED WR
     # =========================================================
     def get_accelerated_wr(self, pattern_name):
-        """Fast-Response WR (5:60%, 10:30%, 20:10%)"""
         recent = list(self.pattern_recent[pattern_name])
-        
         if len(recent) < 5:
             return self.pattern_wr[pattern_name]
         
@@ -310,18 +261,6 @@ class HybridEngineV44:
         
         return wr5 * 0.6 + wr10 * 0.3 + wr20 * 0.1
     
-    # =========================================================
-    # DYNAMIC WR (Sliding 50)
-    # =========================================================
-    def get_recent_wr(self, pattern_name, window=50):
-        recent = list(self.pattern_recent[pattern_name])
-        if len(recent) < 5:
-            return self.pattern_wr[pattern_name]
-        return sum(recent[-window:]) / len(recent[-window:])
-    
-    # =========================================================
-    # TIME-DECAY WEIGHT
-    # =========================================================
     def time_decay_weight(self, pattern_name):
         recent = list(self.pattern_recent[pattern_name])
         if len(recent) < 3:
@@ -331,9 +270,6 @@ class HybridEngineV44:
         weighted_wr = sum(w * r for w, r in zip(weights, recent)) / sum(weights)
         return max(0.3, min(2.0, weighted_wr / 0.5))
     
-    # =========================================================
-    # VOLATILITY INDEX
-    # =========================================================
     def calculate_volatility(self):
         if len(self.history) < 20:
             self.volatility_index = 0.5
@@ -343,25 +279,22 @@ class HybridEngineV44:
         self.volatility_index = alt / 19
         return self.volatility_index
     
-    # =========================================================
-    # TRAP FILTER
-    # =========================================================
     def trap_filter(self, arr):
         if len(arr) < 15: return False
+        
         last10 = arr[-10:]
         b10 = last10.count("Big")
+        
         if 4 <= b10 <= 6:
+            self.trap_count += 1
+            if self.trap_count >= 3:
+                self.trap_count = 0
+                return False
             return True
-        last7 = arr[-7:]
-        if last7 == ["Big"]*5 + ["Small"] + ["Big"]:
-            return True
-        if last7 == ["Small"]*5 + ["Big"] + ["Small"]:
-            return True
-        return False
+        else:
+            self.trap_count = 0
+            return False
     
-    # =========================================================
-    # CORRELATION FILTER
-    # =========================================================
     def correlation_filter(self, patterns):
         if len(patterns) < 4:
             return False
@@ -383,14 +316,10 @@ class HybridEngineV44:
         
         return False
     
-    # =========================================================
-    # 🆕 MULTI-LAYER CONFIRMATION
-    # =========================================================
     def multi_layer_confirm(self, arr):
-        """3 Layer Independence"""
-        layer1 = self.p_frequency(arr)       # Statistical
-        layer2 = self.p_markov2(arr)         # Pattern
-        layer3 = self.p_mean_reversion(arr)  # Reversal
+        layer1 = self.p_frequency(arr)
+        layer2 = self.p_markov2(arr)
+        layer3 = self.p_mean_reversion(arr)
         
         signals = [s for s, _, _ in [layer1, layer2, layer3] if s]
         
@@ -399,9 +328,6 @@ class HybridEngineV44:
         
         return None, 0, "Multi-Layer"
     
-    # =========================================================
-    # BIAS-PATTERN CONFLICT FILTER
-    # =========================================================
     def bias_conflict_filter(self, arr, signal):
         if len(arr) < 50:
             return 1.0
@@ -419,56 +345,11 @@ class HybridEngineV44:
         
         return 1.0
     
-    # =========================================================
-    # 🆕 RISK-ADJUSTED KELLY (Drawdown Protection — 0X Concept)
-    # =========================================================
-    def risk_adjusted_kelly(self, confidence, vol):
-        """Kelly + Drawdown Protection + Win Streak Boost"""
-        p = confidence / 100
-        q = 1 - p
-        b = 1.0
-        kelly = (b * p - q) / b
-        kelly_fraction = kelly * 0.25  # Quarter Kelly
-        
-        # Volatility Scaling
-        if vol > 0.7:
-            kelly_fraction *= 0.5
-        elif vol > 0.5:
-            kelly_fraction *= 0.75
-        
-        # 🆕 Drawdown Protection
-        dd = (INITIAL_BANKROLL - self.bankroll) / INITIAL_BANKROLL
-        
-        if dd > 0.15:       # 15% → 40%
-            kelly_fraction *= 0.4
-            self.pattern_stats["dd_protect_15"] += 1
-        elif dd > 0.10:     # 10% → 60%
-            kelly_fraction *= 0.6
-            self.pattern_stats["dd_protect_10"] += 1
-        elif dd > 0.05:     # 5% → 80%
-            kelly_fraction *= 0.8
-            self.pattern_stats["dd_protect_5"] += 1
-        
-        # 🆕 Win Streak Boost
-        if self.consecutive_wins >= 5:
-            kelly_fraction *= 1.5
-        elif self.consecutive_wins >= 3:
-            kelly_fraction *= 1.25
-        
-        # Cap 1-5%
-        kelly_fraction = max(0.01, min(0.05, kelly_fraction))
-        
-        return self.bankroll * kelly_fraction
-    
-    # =========================================================
-    # BAYESIAN INFERENCE
-    # =========================================================
     def bayesian_inference(self, patterns):
         log_big = math.log(0.5)
         log_small = math.log(0.5)
         
         for pat_name, sig, conf in patterns:
-            # Use Accelerated WR
             wr = self.get_accelerated_wr(pat_name)
             wr = max(0.1, min(0.9, wr))
             
@@ -489,9 +370,6 @@ class HybridEngineV44:
         else:
             return "Small", (1 - posterior_big) * 100
     
-    # =========================================================
-    # VOLATILITY-ADAPTIVE WEIGHT
-    # =========================================================
     def adapt_by_volatility(self, patterns, vol):
         adjusted = []
         for sig, conf, pat_name in patterns:
@@ -512,7 +390,7 @@ class HybridEngineV44:
         return adjusted
     
     # =========================================================
-    # PATTERNS (28)
+    # PATTERNS
     # =========================================================
     def p_extreme_20(self, arr):
         if len(arr) < 20: return None, 0, "extreme20"
@@ -770,57 +648,35 @@ class HybridEngineV44:
             return nxt, 68, "symmetry"
         return None, 0, "symmetry"
     
-    # 🆕 CLUSTER PATTERN (0X Concept)
     def p_cluster(self, arr):
-        """Cluster Pattern (2-2, 3-3, 4-4)"""
         if len(arr) < 8: return None, 0, "cluster"
-        
-        # 2-2 Pattern (BB SS, SS BB)
         last4 = arr[-4:]
         if last4[:2] == last4[2:]:
             nxt = "Small" if last4[0] == "Big" else "Big"
-            self.pattern_stats["cluster_22"] += 1
             return nxt, 70, "cluster"
-        
-        # 4-4 Pattern
         last8 = arr[-8:]
         if last8[:4] == last8[4:]:
             nxt = "Small" if last8[0] == "Big" else "Big"
-            self.pattern_stats["cluster_44"] += 1
             return nxt, 72, "cluster"
-        
-        # 3-3 Pattern
-        if len(arr) >= 12:
-            last6 = arr[-6:]
-            if last6[:3] == last6[3:]:
-                nxt = "Small" if last6[0] == "Big" else "Big"
-                self.pattern_stats["cluster_33"] += 1
-                return nxt, 74, "cluster"
-        
         return None, 0, "cluster"
     
-    # 🆕 TRIPLE PATTERN (0X Concept)
     def p_triple(self, arr):
-        """Triple Pattern (BBB SSS)"""
         if len(arr) < 6: return None, 0, "triple"
-        
         last6 = arr[-6:]
         if last6[:3] == last6[3:]:
             nxt = "Small" if last6[0] == "Big" else "Big"
             return nxt, 75, "triple"
-        
         return None, 0, "triple"
     
     # =========================================================
-    # 🎯 SIGNAL GENERATOR v4.4
+    # 🎯 SIGNAL GENERATOR
     # =========================================================
     def generate_signal(self, arr):
         vol = self.calculate_volatility()
         
-        # 🆕 Multi-Layer First (Highest Priority)
         ml_sig, ml_conf, ml_reason = self.multi_layer_confirm(arr)
         if ml_sig and ml_conf >= 90:
-            return ml_sig, ml_conf, f"🎯 {ml_reason} ({ml_conf:.0f}%)", [("multi_layer", ml_sig)], vol, 0
+            return ml_sig, ml_conf, f"🎯 {ml_reason}", [("multi_layer", ml_sig)], vol, 0
         
         raw_patterns = [
             self.p_extreme_20(arr),
@@ -849,25 +705,21 @@ class HybridEngineV44:
             self.p_block222(arr),
             self.p_last_rev(arr),
             self.p_symmetry(arr),
-            self.p_cluster(arr),      # 🆕
-            self.p_triple(arr),       # 🆕
+            self.p_cluster(arr),
+            self.p_triple(arr),
         ]
         
-        # Volatility-Adaptive
         patterns = self.adapt_by_volatility(raw_patterns, vol)
         valid = [(sig, conf, pat) for sig, conf, pat in patterns if sig is not None]
         
         if len(valid) < 2:
             return None, 0, f"Low patterns ({len(valid)})", [], vol, 0
         
-        # Correlation Filter
         if self.correlation_filter(valid):
-            return None, 0, "🚫 Correlation Conflict", valid, vol, 0
+            return None, 0, "🚫 Correlation Conflict", [], vol, 0
         
-        # Bayesian
         bay_signal, bay_conf = self.bayesian_inference(valid)
         
-        # Weighted Vote (Accelerated WR + Time-Decay + Online)
         big_score = 0.0
         small_score = 0.0
         reasons = []
@@ -894,8 +746,14 @@ class HybridEngineV44:
         vote_conf = max(big_pct, 1 - big_pct) * 100
         vote_signal = "Big" if big_pct >= 0.5 else "Small"
         
-        # Fusion
-        if bay_signal == vote_signal:
+        if abs(bay_conf - 50) < 5:
+            if vote_conf >= 75:
+                final_signal = vote_signal
+                final_conf = vote_conf * 0.9
+                fusion_type = "📊 Vote Only"
+            else:
+                return None, 0, f"Weak Vote ({vote_conf:.0f}%)", [], vol, 0
+        elif bay_signal == vote_signal:
             final_signal = bay_signal
             final_conf = max(bay_conf, vote_conf)
             fusion_type = "🎯 Fusion"
@@ -904,89 +762,18 @@ class HybridEngineV44:
             final_conf = bay_conf * 0.85
             fusion_type = "🧮 Bayesian"
         
-        # Bias Conflict
         bias_mult = self.bias_conflict_filter(arr, final_signal)
         final_conf *= bias_mult
         bias_note = " ⚠️" if bias_mult < 1.0 else (" ✅" if bias_mult > 1.0 else "")
         
-        reason = f"{fusion_type}{bias_note} | Bay:{bay_conf:.0f}% Vote:{vote_conf:.0f}% | {' + '.join(reasons[:2])}"
-        return final_signal, final_conf, reason, valid, vol, bay_conf
-    
-    # =========================================================
-    # SAFETY VALVE
-    # =========================================================
-    def check_safety_valve(self):
-        session_change = self.bankroll - self.session_start_bankroll
-        if session_change > self.session_max_profit:
-            self.session_max_profit = session_change
+        reason = f"{fusion_type}{bias_note} | Bay:{bay_conf:.0f}% Vote:{vote_conf:.0f}%"
         
-        if self.session_max_profit > 5:
-            if session_change < 0 and abs(session_change) > self.session_max_profit * 0.5:
-                self.safety_valve_active = True
-                self.is_paused = True
-                self.send_telegram(
-                    f"🛡️ <b>SAFETY VALVE</b>\n"
-                    f"Max: +${self.session_max_profit:.2f}\n"
-                    f"Current: {session_change:+.2f}\n"
-                    f"Pausing 15 min..."
-                )
-                threading.Timer(900, self._resume_valve).start()
-                return True
-        return False
-    
-    def _resume_valve(self):
-        self.is_paused = False
-        self.safety_valve_active = False
-        self.session_start_bankroll = self.bankroll
-        self.session_max_profit = 0
-        self.send_telegram("🟢 Safety Valve Resume")
-    
-    # =========================================================
-    # 🆕 PROFIT LOCK (0X Concept Refined)
-    # =========================================================
-    def check_profit_lock(self):
-        """Profit Lock — Retrace 50% → Pause"""
-        session_pl = self.bankroll - self.session_start_bankroll
+        patterns_used_2tuple = [(pat_name, sig) for sig, conf, pat_name in valid]
         
-        # Track peak
-        if session_pl > self.session_max_profit:
-            self.session_max_profit = session_pl
-        
-        # Profit > 5% of initial → Protect
-        if self.session_max_profit > INITIAL_BANKROLL * 0.05:
-            # Retrace 50% → Pause
-            if session_pl < self.session_max_profit * 0.5:
-                self.profit_lock_active = True
-                self.is_paused = True
-                self.send_telegram(
-                    f"🔒 <b>PROFIT LOCK</b>\n"
-                    f"Peak: +${self.session_max_profit:.2f}\n"
-                    f"Current: {session_pl:+.2f}\n"
-                    f"Pausing 10 min..."
-                )
-                threading.Timer(600, self._resume_profit_lock).start()
-                return True
-        return False
-    
-    def _resume_profit_lock(self):
-        self.is_paused = False
-        self.profit_lock_active = False
-        self.session_start_bankroll = self.bankroll
-        self.session_max_profit = 0
-        self.send_telegram("🟢 Profit Lock Resume")
+        return final_signal, final_conf, reason, patterns_used_2tuple, vol, bay_conf
     
     # =========================================================
-    # SESSION RESET
-    # =========================================================
-    def check_session_reset(self):
-        if self.session_trades >= 20:
-            self.session_start_bankroll = self.bankroll
-            self.session_max_profit = 0
-            self.session_trades = 0
-            self.send_telegram(f"🔄 <b>New Session</b> — Bank: ${self.bankroll:.2f}")
-    
-    # =========================================================
-    # 🎯 ANALYZE ROUND
+    # 🎯 ANALYZE ROUND (Loss Hidden + Win Simple)
     # =========================================================
     def analyze_round(self, period, number):
         self.last_period = str(period)
@@ -998,12 +785,14 @@ class HybridEngineV44:
         
         short = "..." + str(period)[-3:]
         
-        # 1. Evaluate
+        # 1. Evaluate Previous Signal
         if self.active_prediction:
             win = (self.active_prediction == current_result)
-            self.session_trades += 1
             
-            for pat_name, sig in self.active_patterns_used:
+            for pat_data in self.active_patterns_used:
+                pat_name = pat_data[0]
+                sig = pat_data[1]
+                
                 self.pattern_total[pat_name] += 1
                 if sig == current_result:
                     self.pattern_win[pat_name] += 1
@@ -1018,61 +807,33 @@ class HybridEngineV44:
                     pat_name, sig, current_result, sig == current_result
                 )
             
-            self.data_engine.save_signal(
-                period, self.active_prediction, 0, self.active_bayesian,
-                str(self.active_patterns_used), current_result, win, self.current_step
-            )
-            
             if win:
                 self.total_wins += 1
                 self.consecutive_wins += 1
                 self.consecutive_losses = 0
-                step_key = min(self.current_step, 3)
-                self.win_by_step[step_key] += 1
                 
-                profit = self.next_bet * (2 ** self.current_step)
-                self.bankroll += profit
+                prev_step = self.current_step
+                step_key = min(prev_step, 3)
+                self.win_by_step[step_key] += 1
                 self.current_step = 0
                 
+                # ✅ Win Only — Simple
                 self.send_telegram(
-                    f"✅ <b>WIN</b>\n"
-                    f"🔢 {number} ({current_result})\n"
-                    f"💰 +${profit:.2f} | Bank: ${self.bankroll:.2f}\n"
+                    f"✅ <b>WIN</b> — Step {prev_step + 1}\n"
                     f"📊 WR: {self.get_wr():.1f}% | Win3: {self.get_win3_rate():.1f}%"
                 )
-                
-                if self.safety_mode and self.consecutive_wins >= 2:
-                    self.safety_mode = False
-                    self.send_telegram("✅ Safety Exit")
             else:
+                # ❌ Loss — Silent (စာ မပြ)
                 self.total_losses += 1
                 self.consecutive_losses += 1
                 self.consecutive_wins = 0
                 self.current_step += 1
-                
-                loss = self.next_bet * (2 ** (self.current_step - 1))
-                self.bankroll -= loss
-                
-                if self.consecutive_losses >= 3:
-                    self.safety_mode = True
-                    self.send_telegram(f"🛡️ <b>SAFETY MODE</b> — 3 Losses")
-                
-                if self.current_step >= 2:
-                    self.recovery_rounds = 3
-                    self.send_telegram(f"🔄 <b>RECOVERY</b> — 3 rounds")
-                
-                if self.current_step >= 3:
-                    self.send_telegram(f"⚠️ <b>Step {self.current_step+1} ({2**self.current_step}x)</b>")
+                # Telegram ပို့ မလုပ်
             
             self.active_prediction = None
             self.active_patterns_used = []
-            
-            # Check Safety + Profit
-            if self.check_safety_valve(): return
-            if self.check_profit_lock(): return
-            self.check_session_reset()
         
-        # 2. Save
+        # 2. Save & Append
         self.data_engine.save_result(period, number, current_result)
         self.history.append(current_result)
         
@@ -1081,34 +842,21 @@ class HybridEngineV44:
             self.send_telegram(f"⏳ Warm-up {short} ({len(self.history)}/20)")
             return
         
-        # 4. Recovery
-        if self.recovery_rounds > 0:
-            self.recovery_rounds -= 1
-            self.total_skips += 1
-            self.send_telegram(f"🔄 <b>RECOVERY</b> {short} ({self.recovery_rounds} left)")
-            return
-        
-        # 5. Safety Mode
-        if self.safety_mode:
-            self.total_skips += 1
-            self.send_telegram(f"🛡️ Safety — {short}")
-            return
-        
-        # 6. Trap Filter
+        # 4. Trap Filter
         arr = list(self.history)
         if self.trap_filter(arr):
             self.total_skips += 1
             self.send_telegram(f"⏸️ <b>SKIP</b> {short}\n🚨 Trap")
             return
         
-        # 7. Signal
+        # 5. Signal
         signal, conf, reason, patterns_used, vol, bay = self.generate_signal(arr)
         
         self.last_signal = signal if signal else "SKIP"
         self.last_reason = reason
         self.active_bayesian = bay
         
-        # 8. Threshold
+        # 6. Threshold
         threshold = self.get_dynamic_threshold()
         
         if signal is None or conf < threshold:
@@ -1116,45 +864,30 @@ class HybridEngineV44:
             self.send_telegram(f"⏸️ <b>SKIP</b> {short}\n{reason}")
             return
         
-        # 9. Risk-Adjusted Kelly
-        self.next_bet = self.risk_adjusted_kelly(conf, vol)
-        
-        # 10. Emit
+        # 7. Emit Signal (Martingale)
         self.active_prediction = signal
         self.active_patterns_used = patterns_used
         self.total_signals += 1
         
-        stars = "⭐" * min(int(conf / 20), 5)
-        dd = (INITIAL_BANKROLL - self.bankroll) / INITIAL_BANKROLL * 100
-        dd_note = f" | DD:{dd:.1f}%" if dd > 5 else ""
+        next_bet = BASE_BET * (2 ** self.current_step)
         
+        stars = "⭐" * min(int(conf / 20), 5)
         self.send_telegram(
-            f"🚀 <b>HYBRID v4.4 SIGNAL</b> {stars}\n"
+            f"🚀 <b>HYBRID v4.4.3 SIGNAL</b> {stars}\n"
             f"📅 Period: {short}\n"
             f"📌 {reason}\n"
             f"🎯 <b>{signal.upper()}</b>\n"
-            f"💰 Bet: ${self.next_bet:.2f} | Vol: {vol:.2f}{dd_note}\n"
-            f"📊 WR: {self.get_wr():.1f}% | Win3: {self.get_win3_rate():.1f}%"
+            f"💰 Step {self.current_step+1} ({2**self.current_step}x) = ${next_bet:.2f}"
         )
     
     def get_dynamic_threshold(self):
         total = self.total_wins + self.total_losses
         if total < 10: return 65
         wr = self.get_wr()
-        # 🆕 Drawdown → Higher Threshold
-        dd = (INITIAL_BANKROLL - self.bankroll) / INITIAL_BANKROLL
-        base = 0
-        if wr >= 75: base = 72
-        elif wr >= 65: base = 70
-        elif wr >= 55: base = 68
-        else: base = 65
-        
-        if dd > 0.10:
-            base += 3
-        elif dd > 0.05:
-            base += 1
-        
-        return base
+        if wr >= 75: return 72
+        elif wr >= 65: return 70
+        elif wr >= 55: return 68
+        else: return 65
     
     def get_wr(self):
         t = self.total_wins + self.total_losses
@@ -1181,7 +914,7 @@ class HybridEngineV44:
         
         self.send_telegram(
             f"🔧 <b>OPTIMIZE</b>\n\n🏆 Top 5:\n{top_str}\n\n"
-            f"📊 WR: {self.get_wr():.1f}%\n💰 Bank: ${self.bankroll:.2f}"
+            f"📊 WR: {self.get_wr():.1f}%\n🎯 Win3: {self.get_win3_rate():.1f}%"
         )
 
 
@@ -1210,20 +943,15 @@ def poll_telegram(agent):
                     if cid != CHAT_ID: continue
                     
                     if txt == "/status":
-                        dd = (INITIAL_BANKROLL - agent.bankroll) / INITIAL_BANKROLL * 100
                         agent.send_telegram(
-                            f"🚀 <b>HYBRID v4.4 STATUS</b>\n\n"
+                            f"🚀 <b>HYBRID v4.4.3 STATUS</b>\n\n"
                             f"⚙️ {'PAUSED 🛑' if agent.is_paused else 'RUNNING 🟢'}\n"
-                            f"🛡️ Safety: {'ACTIVE' if agent.safety_mode else 'OFF'}\n"
-                            f"🔄 Recovery: {agent.recovery_rounds if agent.recovery_rounds > 0 else 'OFF'}\n"
-                            f"⚡ Valve: {'ACTIVE' if agent.safety_valve_active else 'OFF'}\n"
-                            f"🔒 Profit Lock: {'ACTIVE' if agent.profit_lock_active else 'OFF'}\n"
                             f"Signals: {agent.total_signals} | Skips: {agent.total_skips}\n"
                             f"✅ W: {agent.total_wins} | ❌ L: {agent.total_losses}\n"
                             f"📈 WR: {agent.get_wr():.2f}%\n"
                             f"🎯 Win3: {agent.get_win3_rate():.1f}%\n"
-                            f"💰 Bank: ${agent.bankroll:.2f} | DD: {dd:.1f}%\n"
-                            f"📊 Vol: {agent.volatility_index:.2f}"
+                            f"💰 Step: {agent.current_step+1} ({2**agent.current_step}x)\n"
+                            f"📊 Base Bet: ${BASE_BET}"
                         )
                     elif txt == "/patterns":
                         s = "📈 <b>Pattern WR</b>\n"
@@ -1232,34 +960,26 @@ def poll_telegram(agent):
                             acc = agent.get_accelerated_wr(k)
                             s += f"{k}: {v*100:.0f}% | Acc:{acc*100:.0f}% ({t}x)\n"
                         agent.send_telegram(s)
-                    elif txt == "/bank":
-                        session_pl = agent.bankroll - agent.session_start_bankroll
-                        dd = (INITIAL_BANKROLL - agent.bankroll) / INITIAL_BANKROLL * 100
-                        agent.send_telegram(
-                            f"💰 <b>Bank</b>\n"
-                            f"Balance: ${agent.bankroll:.2f}\n"
-                            f"Drawdown: {dd:.1f}%\n"
-                            f"Session P/L: {session_pl:+.2f}\n"
-                            f"Session Max: +${agent.session_max_profit:.2f}\n"
-                            f"Next Bet: ${agent.next_bet:.2f}"
-                        )
                     elif txt == "/pause":
                         agent.is_paused = True
                         agent.send_telegram("🛑 Paused")
                     elif txt == "/resume":
                         agent.is_paused = False
-                        agent.safety_mode = False
-                        agent.safety_valve_active = False
-                        agent.profit_lock_active = False
-                        agent.recovery_rounds = 0
                         agent.send_telegram("🟢 Resumed")
                     elif txt == "/reset":
                         agent.current_step = 0
-                        agent.recovery_rounds = 0
-                        agent.session_trades = 0
-                        agent.session_start_bankroll = agent.bankroll
-                        agent.session_max_profit = 0
-                        agent.send_telegram("🔄 Reset")
+                        agent.send_telegram("🔄 Step Reset")
+                    elif txt.startswith("/base"):
+                        parts = txt.split()
+                        if len(parts) == 2:
+                            try:
+                                global BASE_BET
+                                BASE_BET = float(parts[1])
+                                agent.send_telegram(f"✅ Base Bet = ${BASE_BET}")
+                            except:
+                                agent.send_telegram("❌ Invalid")
+                        else:
+                            agent.send_telegram(f"Base Bet: ${BASE_BET}")
         except Exception as e:
             print(f"TG Poll: {e}", flush=True)
         time.sleep(1)
@@ -1269,8 +989,8 @@ def poll_telegram(agent):
 # MAIN LOOP
 # ==========================================
 def run_bot():
-    print("🚀 HYBRID v4.4 (God-Level) starting...", flush=True)
-    agent = HybridEngineV44()
+    print("🚀 HYBRID v4.4.3 (Loss Hidden + Win Only) starting...", flush=True)
+    agent = HybridEngineV443()
     threading.Thread(target=poll_telegram, args=(agent,), daemon=True).start()
     
     last_period = ""
