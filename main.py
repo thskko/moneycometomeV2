@@ -30,7 +30,7 @@ global_agent = None
 def home():
     global global_agent
     if not global_agent:
-        return "<h3>🚀 HYBRID v4.4.3 starting...</h3>"
+        return "<h3>🚀 HYBRID v4.4.4 starting...</h3>"
     
     a = global_agent
     total = a.total_wins + a.total_losses
@@ -46,7 +46,7 @@ def home():
         pat_rows += f"<tr><td>{k}</td><td>{v*100:.0f}%</td><td>{acc_wr*100:.0f}%</td><td>{t}</td></tr>"
     
     return f"""
-    <html><head><title>HYBRID v4.4.3</title>
+    <html><head><title>HYBRID v4.4.4</title>
     <meta http-equiv="refresh" content="15">
     <style>
     body{{background:#0a0e27;color:#0ff;font-family:monospace;padding:20px}}
@@ -58,7 +58,7 @@ def home():
     th,td{{padding:6px;border:1px solid #0ff;text-align:left;font-size:12px}}
     th{{background:#0ff;color:#000}}
     </style></head><body>
-    <h1>🚀 HYBRID v4.4.3</h1>
+    <h1>🚀 HYBRID v4.4.4</h1>
     
     <div class="box">
       <h2>📊 Performance</h2>
@@ -123,7 +123,7 @@ class OnlineLearner:
 # DATA ENGINE
 # ==========================================
 class DataEngine:
-    def __init__(self, db_path='wingo_v443.db'):
+    def __init__(self, db_path='wingo_v444.db'):
         self.db_path = db_path
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.cursor = self.conn.cursor()
@@ -181,9 +181,9 @@ class DataEngine:
 
 
 # ==========================================
-# 🚀 HYBRID v4.4.3 ENGINE
+# 🚀 HYBRID v4.4.4 ENGINE
 # ==========================================
-class HybridEngineV443:
+class HybridEngineV444:
     def __init__(self):
         global global_agent
         global_agent = self
@@ -823,7 +823,7 @@ class HybridEngineV443:
                     f"📊 WR: {self.get_wr():.1f}% | Win3: {self.get_win3_rate():.1f}%"
                 )
             else:
-                # ❌ Loss — Silent (စာ မပြ)
+                # ❌ Loss — Silent
                 self.total_losses += 1
                 self.consecutive_losses += 1
                 self.consecutive_wins = 0
@@ -864,7 +864,7 @@ class HybridEngineV443:
             self.send_telegram(f"⏸️ <b>SKIP</b> {short}\n{reason}")
             return
         
-        # 7. Emit Signal (Martingale)
+        # 7. Emit Signal
         self.active_prediction = signal
         self.active_patterns_used = patterns_used
         self.total_signals += 1
@@ -873,7 +873,7 @@ class HybridEngineV443:
         
         stars = "⭐" * min(int(conf / 20), 5)
         self.send_telegram(
-            f"🚀 <b>HYBRID v4.4.3 SIGNAL</b> {stars}\n"
+            f"🚀 <b>HYBRID v4.4.4 SIGNAL</b> {stars}\n"
             f"📅 Period: {short}\n"
             f"📌 {reason}\n"
             f"🎯 <b>{signal.upper()}</b>\n"
@@ -922,6 +922,8 @@ class HybridEngineV443:
 # TELEGRAM COMMANDS
 # ==========================================
 def poll_telegram(agent):
+    global BASE_BET          # ✅ FIX — Function အပေါ်ဆုံးမှာ
+    
     try:
         requests.get(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook?drop_pending_updates=true",
@@ -944,7 +946,7 @@ def poll_telegram(agent):
                     
                     if txt == "/status":
                         agent.send_telegram(
-                            f"🚀 <b>HYBRID v4.4.3 STATUS</b>\n\n"
+                            f"🚀 <b>HYBRID v4.4.4 STATUS</b>\n\n"
                             f"⚙️ {'PAUSED 🛑' if agent.is_paused else 'RUNNING 🟢'}\n"
                             f"Signals: {agent.total_signals} | Skips: {agent.total_skips}\n"
                             f"✅ W: {agent.total_wins} | ❌ L: {agent.total_losses}\n"
@@ -973,8 +975,7 @@ def poll_telegram(agent):
                         parts = txt.split()
                         if len(parts) == 2:
                             try:
-                                global BASE_BET
-                                BASE_BET = float(parts[1])
+                                BASE_BET = float(parts[1])   # ✅ global မလို — အပေါ်မှာ ရှိပြီး
                                 agent.send_telegram(f"✅ Base Bet = ${BASE_BET}")
                             except:
                                 agent.send_telegram("❌ Invalid")
@@ -989,8 +990,8 @@ def poll_telegram(agent):
 # MAIN LOOP
 # ==========================================
 def run_bot():
-    print("🚀 HYBRID v4.4.3 (Loss Hidden + Win Only) starting...", flush=True)
-    agent = HybridEngineV443()
+    print("🚀 HYBRID v4.4.4 (Syntax Fixed) starting...", flush=True)
+    agent = HybridEngineV444()
     threading.Thread(target=poll_telegram, args=(agent,), daemon=True).start()
     
     last_period = ""
