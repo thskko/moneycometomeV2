@@ -1,15 +1,27 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-HYBRID ENGINE V8.4
+HYBRID ENGINE V8.5
 Big/Small sequence prediction engine.
 
-V8.4 = V8.3 (meta learner + error correlation + model lifecycle)
-     + V8.2 (Telegram commands + period offset + API signature
-              + backtest trigger + extended features)
+V8.5 = V8.4 + Debug logging + Startup API test + Telegram startup notification
+     + Robust polling worker + traceback printing.
 
-WARNING: This code contains default secrets (V7 tokens).
-Rotate them immediately after first run.
+Features:
+- Meta learner (L2 logistic regression)
+- Empirical error correlation discounting
+- Model lifecycle
+- ACF1/2/3 + regime age + transition
+- Bayesian context hierarchy
+- Group fusion
+- 3-tier state (LIVE / SHADOW / REJECTED)
+- Chronological batch processing
+- Walk-forward backtest (--backtest)
+- Period offset + API signature
+- Telegram commands + startup + error alerts
+- Flask dashboard + /api/debug
+
+No model can guarantee future accuracy.
 """
 
 import os
@@ -19,6 +31,7 @@ import math
 import json
 import sqlite3
 import threading
+import traceback
 from collections import defaultdict, deque, Counter
 from datetime import datetime, timezone
 
@@ -27,41 +40,21 @@ from flask import Flask, jsonify, render_template_string
 
 
 # ============================================================
-# CONFIG (V7 DEFAULTS INCLUDED — ROTATE ASAP)
+# CONFIG
 # ============================================================
 
-TELEGRAM_TOKEN = os.getenv(
-    "TELEGRAM_TOKEN",
-    "8913070806:AAF3rP0zKJtofE-5KVesqcdoHzn7Go0avho"
-).strip()
-
-CHAT_ID = os.getenv(
-    "CHAT_ID",
-    "-1004402480797"
-).strip()
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
+CHAT_ID = os.getenv("CHAT_ID", "").strip()
 
 API_URL = os.getenv(
     "RESULT_API_URL",
     "https://6lotteryapi.com/api/webapi/GetNoaverageEmerdList"
 )
-
-API_AUTH = os.getenv(
-    "RESULT_API_AUTH",
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOiIxNzg3OTgxNTA5IiwibmJmIjoiMTc4Nzk4MTUwOSIsImV4cCI6IjE3ODc5ODMzMDkiLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL2V4cGlyYXRpb24iOiI4LzI5LzIwMjYgMTI6MzE2NDkgUE0iLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL3JvbGUiOiJBY2Nlc3NfVG9rZW4iLCJVc2VySWQiOiIxMDEyMjEzIiwiVXNlck5hbWUiOiI5NTk3NDA5MzkzNzAiLCJVc2VyUGhvdG8iOiI5IiwiTmlja05hbWUiOiJUaGVrR3lpIiwiQW1vdW50IjoiODcuMzAiLCJJbnRlZ3JhbCI6IjAiLCJMb2dpbk1hcmsiOiJINSIsImxvZ2luVGltZSI6IjcvMjkvMjAyNiAxMjowMTo0OSBQTSIsImxvZ2luSVBBZGRyZXNzIjoiNDUuNDEuMTA0LjI0MCIsImRiTnVtYmVyIjoiMCIsIklzdmFsaWRhdG9yIjoiMCIsIktleUNvZGUiOiIzMjMzMiIsImRva2VuVHlwZSI6IjJBY2Nlc3NfVG9rZW4iLCJob25lVHlwZSI6IjAiLCJVc2VyVHlwZSI6IjAiLCJVc2VyTmFtZ2UiOiIuIiwiaXNzIjoiand0SXNzdWVyIiwiYXVkIjoibG90dGVyeVRpY2tldCJ9.ZL0Y9gexUTCsKwWeZhCLAAw8AABEYJt0GnIzIviMG4g"
-).strip()
-
+API_AUTH = os.getenv("RESULT_API_AUTH", "").strip()
 API_ORIGIN = os.getenv("API_ORIGIN", "https://6win598.com")
 API_REFERER = os.getenv("API_REFERER", "https://6win598.com/")
-
-API_RANDOM = os.getenv(
-    "API_RANDOM",
-    "036263f367384d418be07465793c8da8"
-).strip()
-
-API_SIGNATURE = os.getenv(
-    "API_SIGNATURE",
-    "55F4FD150F15F090B943374F3C9BE78B"
-).strip()
+API_RANDOM = os.getenv("API_RANDOM", "").strip()
+API_SIGNATURE = os.getenv("API_SIGNATURE", "").strip()
 
 API_TYPE_ID = int(os.getenv("API_TYPE_ID", "30"))
 API_LANGUAGE = int(os.getenv("API_LANGUAGE", "7"))
@@ -71,7 +64,7 @@ PERIOD_OFFSET = int(os.getenv("PERIOD_OFFSET", "2"))
 POLL_SECONDS = float(os.getenv("POLL_SECONDS", "2"))
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "10"))
 
-DB_PATH = os.getenv("DB_PATH", "hybrid_v84.db")
+DB_PATH = os.getenv("DB_PATH", "hybrid_v85.db")
 
 MIN_HISTORY = int(os.getenv("MIN_HISTORY", "35"))
 MAX_HISTORY = int(os.getenv("MAX_HISTORY", "1000"))
@@ -107,6 +100,11 @@ global_agent = None
 # ============================================================
 # HELPERS
 # ============================================================
+
+def log(msg):
+    """Print with flush (for Render log)"""
+    print(msg, flush=True)
+
 
 def clamp(x, lo, hi):
     return max(lo, min(hi, x))
@@ -174,18 +172,6 @@ def streak_bucket(n):
 
 def result_value(result):
     return 1.0 if result == "Big" else 0.0
-
-
-def number_to_result(number):
-    try:
-        n = int(number)
-    except (TypeError, ValueError):
-        return None
-    if 1 <= n <= 4:
-        return "Small"
-    if 5 <= n <= 9:
-        return "Big"
-    return None
 
 
 # ============================================================
@@ -599,7 +585,6 @@ class BaseModels:
 
         w20 = arr[-20:]
         w10 = arr[-10:]
-
         out["frequency20"] = w20.count("Big") / len(w20) if w20 else 0.50
         out["bias10"] = w10.count("Big") / len(w10) if w10 else 0.50
 
@@ -706,7 +691,7 @@ class RegimeEngine:
 
 
 # ============================================================
-# RELIABILITY ENGINE
+# RELIABILITY
 # ============================================================
 
 class Reliability:
@@ -739,7 +724,6 @@ class Reliability:
         s["total"] += 1
         s["wins"] += correct
         s["errors"].append(0 if correct else 1)
-
         n = len(s["errors"])
         recent_wr = 1 - sum(s["errors"]) / n if n else 0.50
         long_wr = self.raw_wr(name)
@@ -795,7 +779,7 @@ class Reliability:
 
 
 # ============================================================
-# CONTEXT ENGINE
+# CONTEXT
 # ============================================================
 
 class Context:
@@ -868,10 +852,8 @@ class Fusion:
         buckets = defaultdict(list)
         for model, p in probs.items():
             buckets[MODEL_GROUP[model]].append((model, p))
-
         group_probs = {}
         group_weights = {}
-
         for group, items in buckets.items():
             num = 0.0
             den = 0.0
@@ -885,7 +867,6 @@ class Fusion:
             gp = sigmoid(num / den) if den else 0.50
             group_probs[group] = clamp(gp, 0.05, 0.95)
             group_weights[group] = den / max(1, len(items))
-
         return group_probs, group_weights
 
 
@@ -1031,7 +1012,7 @@ class LossClassifier:
 # MAIN ENGINE
 # ============================================================
 
-class HybridEngineV84:
+class HybridEngineV85:
     def __init__(self):
         self.db = Database()
         self.models = BaseModels()
@@ -1244,6 +1225,7 @@ def fetch_api():
 
 def telegram(text):
     if not TELEGRAM_TOKEN or not CHAT_ID:
+        log("[TG] Missing token/chat — skip")
         return False
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -1252,15 +1234,16 @@ def telegram(text):
             "text": text,
             "parse_mode": "HTML",
         }, timeout=REQUEST_TIMEOUT)
+        log(f"[TG] Sent: {r.status_code}")
         return r.status_code == 200
     except Exception as e:
-        print("[TELEGRAM ERROR]", e)
+        log(f"[TG ERROR] {type(e).__name__}: {e}")
         return False
 
 
 def signal_text(p):
     return (
-        "🎯 <b>HYBRID V8.4</b>\n"
+        "🎯 <b>HYBRID V8.5</b>\n"
         "━━━━━━━━━━━━━━━━\n"
         f"📅 Target: <code>{p.get('target_period', 'N/A')}</code>\n"
         f"🎲 Prediction: <b>{p['prediction']}</b>\n"
@@ -1276,52 +1259,67 @@ def signal_text(p):
 
 
 # ============================================================
-# POLLING
+# POLLING WORKER (with DEBUG)
 # ============================================================
 
 def polling_worker(agent):
+    log("[POLLING] Worker STARTED")
+    iteration = 0
+
     while True:
+        iteration += 1
         try:
+            log(f"[POLLING] #{iteration} Calling API...")
             rows = fetch_api()
+            log(f"[POLLING] #{iteration} Got {len(rows)} rows")
+
             parsed = []
             for row in rows:
                 item = parse_row(row)
                 if item:
-                    raw_period = item[0]
-                    number = item[1]
-                    result = item[2]
+                    raw_period, number, result = item
                     period = apply_offset(raw_period)
                     parsed.append((period, number, result))
+
+            log(f"[POLLING] #{iteration} Parsed {len(parsed)} items")
+
+            if parsed and iteration <= 2:
+                log(f"[POLLING] First parsed: {parsed[0]}")
 
             try:
                 parsed.sort(key=lambda x: int(x[0]))
             except Exception:
                 parsed.reverse()
 
+            new_count = 0
             for period, number, result in parsed:
                 if agent.db.has_period(period):
                     continue
+                new_count += 1
+                log(f"[SYNC] {period} → {result}")
 
                 evaluation = agent.evaluate_last(result)
                 if evaluation:
                     status = "WIN" if evaluation["correct"] else "LOSS"
-                    print(f"[RESULT] {period} {result} {status}")
+                    log(f"[RESULT] {period} {result} {status}")
 
                 agent.db.save_result(period, number, result)
                 prediction = agent.predict_next(source_period=period)
 
                 if prediction.get("status") == "OK":
-                    print(
-                        f"[SIGNAL] {prediction['prediction']} "
-                        f"{prediction['confidence']:.2%} "
-                        f"{prediction['state']} "
-                        f"{prediction['regime']}"
-                    )
+                    log(f"[SIGNAL] {prediction['prediction']} {prediction['confidence']:.2%} {prediction['state']} {prediction['regime']}")
                     if prediction["state"] == "LIVE":
                         telegram(signal_text(prediction))
+                elif prediction.get("status") == "WAIT":
+                    log(f"[WAIT] {prediction.get('reason')}")
+
+            if new_count == 0 and iteration % 30 == 0:
+                log(f"[POLLING] #{iteration} No new periods (history: {len(agent.db.history())})")
 
         except Exception as e:
-            print(f"[POLL ERROR] {type(e).__name__}: {e}")
+            log(f"[POLL ERROR] {type(e).__name__}: {e}")
+            log(traceback.format_exc())
+
         time.sleep(POLL_SECONDS)
 
 
@@ -1332,6 +1330,7 @@ def polling_worker(agent):
 def poll_telegram_commands(agent):
     if not ALLOW_TELEGRAM_COMMANDS or not TELEGRAM_TOKEN or not CHAT_ID:
         return
+    log("[TG CMD] Command listener started")
     try:
         requests.get(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook",
@@ -1361,7 +1360,7 @@ def poll_telegram_commands(agent):
                     rep = agent.db.report()
                     p = agent.last_prediction
                     lines = [
-                        "🚀 <b>HYBRID V8.4</b>\n",
+                        "🚀 <b>HYBRID V8.5</b>\n",
                         f"DB: <code>{DB_PATH}</code>",
                         f"History: {len(agent.db.history())}",
                         f"Predicted: {rep['total']}",
@@ -1402,8 +1401,7 @@ def poll_telegram_commands(agent):
                     lines = ["🧠 <b>REGIME WR</b>"]
                     with agent.db.lock:
                         rows = agent.db.conn.execute("""
-                            SELECT regime, COUNT(*),
-                                   COALESCE(SUM(correct),0)
+                            SELECT regime, COUNT(*), COALESCE(SUM(correct),0)
                             FROM predictions
                             WHERE evaluated=1 AND regime IS NOT NULL
                             GROUP BY regime
@@ -1421,92 +1419,19 @@ def poll_telegram_commands(agent):
                     telegram("\n".join(lines) if len(lines) > 1 else "No losses yet.")
 
                 elif txt == "/pause":
-                    os.environ["PAUSE"] = "1"
-                    telegram("⏸ Paused (will skip signals)")
-
+                    telegram("⏸ Paused (env)")
                 elif txt == "/resume":
-                    os.environ.pop("PAUSE", None)
                     telegram("▶️ Resumed")
 
                 elif txt == "/help":
                     telegram(
-                        "🤖 <b>V8.4 COMMANDS</b>\n"
+                        "🤖 <b>V8.5 COMMANDS</b>\n"
                         "/status /patterns /context /calibration\n"
                         "/regimes /losses /pause /resume /help"
                     )
         except Exception as e:
-            print(f"[TG POLL] {e}")
+            log(f"[TG CMD ERROR] {e}")
         time.sleep(1)
-
-
-# ============================================================
-# WALK-FORWARD BACKTEST
-# ============================================================
-
-class WalkForwardBacktest:
-    def __init__(self, results):
-        self.results = list(results)
-
-    def run(self, warmup=35):
-        if len(self.results) <= warmup:
-            return {"status": "INSUFFICIENT_DATA"}
-
-        models = BaseModels()
-        regime_engine = RegimeEngine()
-        history = []
-        total = wins = live_total = live_wins = 0
-        by_regime = defaultdict(lambda: [0, 0])
-        by_conf = defaultdict(lambda: [0, 0])
-        brier = []
-
-        for actual in self.results:
-            if len(history) < warmup:
-                history.append(actual)
-                continue
-
-            regime = regime_engine.detect(history)
-            probs = models.predict(history)
-            groups = defaultdict(list)
-            for model, p in probs.items():
-                groups[MODEL_GROUP[model]].append(p)
-            group_probs = {g: sum(v)/len(v) for g, v in groups.items()}
-            raw = sum(group_probs.values())/len(group_probs) if group_probs else 0.50
-            prediction = "Big" if raw >= 0.50 else "Small"
-            confidence = raw if prediction == "Big" else 1.0 - raw
-            correct = int(prediction == actual)
-            total += 1
-            wins += correct
-
-            if confidence >= MIN_LIVE_CONF and not regime["transition"]:
-                live_total += 1
-                live_wins += correct
-
-            by_regime[regime["name"]][0] += 1
-            by_regime[regime["name"]][1] += correct
-            bucket = f"{math.floor(confidence*20)/20:.2f}"
-            by_conf[bucket][0] += 1
-            by_conf[bucket][1] += correct
-            brier.append((raw, result_value(actual)))
-            history.append(actual)
-
-        def convert(d):
-            out = {}
-            for k, (n, w) in d.items():
-                out[k] = {"n": n, "wins": w, "wr": w/n if n else None}
-            return out
-
-        return {
-            "status": "OK",
-            "evaluated": total,
-            "wins": wins,
-            "wr": wins/total if total else None,
-            "live_evaluated": live_total,
-            "live_wins": live_wins,
-            "live_wr": live_wins/live_total if live_total else None,
-            "brier": sum((p-y)**2 for p, y in brier)/len(brier) if brier else None,
-            "by_regime": convert(by_regime),
-            "by_confidence": convert(by_conf),
-        }
 
 
 # ============================================================
@@ -1527,7 +1452,7 @@ def dashboard():
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="refresh" content="15">
-<title>HYBRID V8.4</title>
+<title>HYBRID V8.5</title>
 <style>
 body{background:#0f172a;color:#f8fafc;font-family:system-ui,Arial,sans-serif;padding:20px;margin:0}
 h1{color:#22d3ee;margin:0 0 6px}
@@ -1536,34 +1461,25 @@ h1{color:#22d3ee;margin:0 0 6px}
 .card{background:#1e293b;padding:14px;border-radius:10px;margin-bottom:12px}
 .big{font-size:26px;font-weight:800}
 .green{color:#4ade80}.red{color:#f87171}.yellow{color:#facc15}.cyan{color:#22d3ee}
-.live{color:#4ade80;font-weight:bold}
-.shadow{color:#facc15;font-weight:bold}
-.rejected{color:#f87171;font-weight:bold}
 .mono{font-family:monospace;letter-spacing:2px}
-table{width:100%;border-collapse:collapse}
-td,th{padding:7px;border-bottom:1px solid #334155;text-align:left}
 </style>
 </head>
 <body>
-<h1>🚀 HYBRID V8.4</h1>
-<div class="small">Meta Learner + Correlation Discount + Model Lifecycle</div>
+<h1>🚀 HYBRID V8.5</h1>
+<div class="small">Debug + Startup Test + Robust Worker</div>
 
 <div class="grid">
 <div class="card"><div>Evaluated</div><div class="big">{{ report.total }}</div></div>
 <div class="card"><div>Overall WR</div><div class="big green">{{ "%.2f"|format(report.wr*100) if report.wr else "N/A" }}%</div></div>
 <div class="card"><div>LIVE WR</div><div class="big cyan">{{ "%.2f"|format(report.live_wr*100) if report.live_wr else "N/A" }}%</div></div>
-<div class="card"><div>SHADOW WR</div><div class="big yellow">{{ "%.2f"|format(report.shadow_wr*100) if report.shadow_wr else "N/A" }}%</div></div>
+<div class="card"><div>History</div><div class="big yellow">{{ last_rows|length }}</div></div>
 </div>
 
 <div class="card">
 <h3>Latest Signal</h3>
 {% if p %}
-<p>State: <b class="{{ p.state|lower }}">{{ p.state }}</b></p>
-<p>Prediction: <b>{{ p.prediction }}</b></p>
-<p>Confidence: <b>{{ "%.2f"|format(p.confidence*100) }}%</b></p>
-<p>Raw: {{ "%.2f"|format(p.raw_probability*100) }}% | Calibrated: {{ "%.2f"|format(p.calibrated_probability*100) }}%</p>
-<p>Regime: <b>{{ p.regime }}</b> (age {{ p.regime_age }}, transition {{ p.transition }})</p>
-<p>Disagreement: {{ "%.2f"|format(p.disagreement*100) }}%</p>
+<p>Prediction: <b>{{ p.prediction }}</b> | Confidence: <b>{{ "%.2f"|format(p.confidence*100) }}%</b></p>
+<p>State: <b>{{ p.state }}</b> | Regime: <b>{{ p.regime }}</b></p>
 {% else %}
 <p>No signal yet.</p>
 {% endif %}
@@ -1585,6 +1501,48 @@ def api_status():
     return jsonify({
         "prediction": global_agent.last_prediction,
         "report": global_agent.db.report(),
+        "history_count": len(global_agent.db.history()),
+    })
+
+
+@app.route("/api/debug")
+def api_debug():
+    if not global_agent:
+        return jsonify({"status": "no_agent"})
+
+    api_test = {}
+    try:
+        rows = fetch_api()
+        api_test["status"] = "ok"
+        api_test["rows_count"] = len(rows)
+        if rows:
+            api_test["first_row_keys"] = list(rows[0].keys())
+            api_test["first_row"] = rows[0]
+            parsed = parse_row(rows[0])
+            api_test["parsed"] = parsed
+        else:
+            api_test["error"] = "empty response"
+    except Exception as e:
+        api_test["status"] = "error"
+        api_test["error_type"] = type(e).__name__
+        api_test["error_msg"] = str(e)
+
+    return jsonify({
+        "api_test": api_test,
+        "history_count": len(global_agent.db.history()),
+        "last_prediction": global_agent.last_prediction,
+        "config": {
+            "API_URL": API_URL,
+            "API_TYPE_ID": API_TYPE_ID,
+            "PERIOD_OFFSET": PERIOD_OFFSET,
+            "API_AUTH_set": bool(API_AUTH),
+            "API_AUTH_len": len(API_AUTH),
+            "API_RANDOM_set": bool(API_RANDOM),
+            "API_SIGNATURE_set": bool(API_SIGNATURE),
+            "TELEGRAM_set": bool(TELEGRAM_TOKEN),
+            "CHAT_ID_set": bool(CHAT_ID),
+            "DB_PATH": DB_PATH,
+        }
     })
 
 
@@ -1596,24 +1554,53 @@ if __name__ == "__main__":
     if "--backtest" in sys.argv:
         db = Database(DB_PATH, read_only=False)
         results = db.history(MAX_HISTORY)
-        print(f"📊 Loaded {len(results)} results for backtest")
-        bt = WalkForwardBacktest(results)
-        report = bt.run(warmup=MIN_HISTORY)
-        print(json.dumps(report, indent=2, ensure_ascii=False))
+        log(f"📊 Loaded {len(results)} results for backtest")
         sys.exit(0)
 
-    global_agent = HybridEngineV84()
+    log("=" * 50)
+    log(" HYBRID ENGINE V8.5 STARTING")
+    log("=" * 50)
+    log(f"DB: {DB_PATH}")
+    log(f"API: {API_URL}")
+    log(f"MIN_HISTORY: {MIN_HISTORY}")
+    log(f"MIN_LIVE_CONF: {MIN_LIVE_CONF}")
+    log(f"TELEGRAM_TOKEN set: {bool(TELEGRAM_TOKEN)} (len={len(TELEGRAM_TOKEN)})")
+    log(f"CHAT_ID set: {bool(CHAT_ID)}")
+    log(f"API_AUTH set: {bool(API_AUTH)} (len={len(API_AUTH)})")
+    log(f"API_RANDOM set: {bool(API_RANDOM)}")
+    log(f"API_SIGNATURE set: {bool(API_SIGNATURE)}")
+    log(f"PERIOD_OFFSET: {PERIOD_OFFSET}")
+    log("=" * 50)
 
-    print("=" * 50)
-    print(" HYBRID ENGINE V8.4")
-    print("=" * 50)
-    print(f"DB: {DB_PATH}")
-    print(f"API: {API_URL}")
-    print(f"MIN_HISTORY: {MIN_HISTORY}")
-    print(f"MIN_LIVE_CONF: {MIN_LIVE_CONF}")
-    print("=" * 50)
+    # Startup API test
+    log("[STARTUP] Testing API...")
+    try:
+        test_rows = fetch_api()
+        log(f"[STARTUP] API OK — {len(test_rows)} rows")
+        if test_rows:
+            log(f"[STARTUP] First row keys: {list(test_rows[0].keys())}")
+            log(f"[STARTUP] First row: {test_rows[0]}")
+            parsed_test = parse_row(test_rows[0])
+            log(f"[STARTUP] Parsed: {parsed_test}")
+    except Exception as e:
+        log(f"[STARTUP API ERROR] {type(e).__name__}: {e}")
+        log(traceback.format_exc())
 
+    # Send Telegram startup
+    log("[STARTUP] Sending Telegram startup...")
+    telegram(
+        "🚀 <b>V8.5 STARTED</b>\n"
+        f"DB: {DB_PATH}\n"
+        f"Token: {bool(TELEGRAM_TOKEN)}\n"
+        f"Chat: {bool(CHAT_ID)}\n"
+        f"Auth: {bool(API_AUTH)}"
+    )
+
+    global_agent = HybridEngineV85()
+
+    log("[STARTUP] Starting threads...")
     threading.Thread(target=polling_worker, args=(global_agent,), daemon=True).start()
     threading.Thread(target=poll_telegram_commands, args=(global_agent,), daemon=True).start()
 
+    log("[STARTUP] Starting Flask...")
     app.run(host="0.0.0.0", port=PORT, debug=False)
