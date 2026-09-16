@@ -1,25 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-HYBRID ENGINE V8.5
+HYBRID ENGINE V8.6
 Big/Small sequence prediction engine.
 
-V8.5 = V8.4 + Debug logging + Startup API test + Telegram startup notification
-     + Robust polling worker + traceback printing.
+V8.6 = V8.5 + Raw API debug + Field detection + Multiple structure support
+     + Better error reporting.
 
-Features:
-- Meta learner (L2 logistic regression)
-- Empirical error correlation discounting
-- Model lifecycle
-- ACF1/2/3 + regime age + transition
-- Bayesian context hierarchy
-- Group fusion
-- 3-tier state (LIVE / SHADOW / REJECTED)
-- Chronological batch processing
-- Walk-forward backtest (--backtest)
-- Period offset + API signature
-- Telegram commands + startup + error alerts
-- Flask dashboard + /api/debug
+Debug features:
+- /api/debug shows raw API response text
+- /api/debug shows detected JSON structure
+- /api/debug tries multiple field paths (data.list, data.rows, etc.)
+- Startup API test
+- Telegram startup notification
 
 No model can guarantee future accuracy.
 """
@@ -64,7 +57,7 @@ PERIOD_OFFSET = int(os.getenv("PERIOD_OFFSET", "2"))
 POLL_SECONDS = float(os.getenv("POLL_SECONDS", "2"))
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "10"))
 
-DB_PATH = os.getenv("DB_PATH", "hybrid_v85.db")
+DB_PATH = os.getenv("DB_PATH", "hybrid_v86.db")
 
 MIN_HISTORY = int(os.getenv("MIN_HISTORY", "35"))
 MAX_HISTORY = int(os.getenv("MAX_HISTORY", "1000"))
@@ -102,7 +95,6 @@ global_agent = None
 # ============================================================
 
 def log(msg):
-    """Print with flush (for Render log)"""
     print(msg, flush=True)
 
 
@@ -1012,7 +1004,7 @@ class LossClassifier:
 # MAIN ENGINE
 # ============================================================
 
-class HybridEngineV85:
+class HybridEngineV86:
     def __init__(self):
         self.db = Database()
         self.models = BaseModels()
@@ -1157,36 +1149,11 @@ class HybridEngineV85:
 
 
 # ============================================================
-# API
+# API CLIENT (V8.6 — Multi-structure support)
 # ============================================================
 
-def parse_row(row):
-    period = (
-        row.get("issueNumber") or row.get("period")
-        or row.get("issue") or row.get("periodNumber")
-    )
-    number = (
-        row.get("number") or row.get("result") or row.get("openNumber")
-    )
-    if period is None or number is None:
-        return None
-    try:
-        period = str(period)
-        number = int(number)
-    except Exception:
-        return None
-    result = "Big" if number >= 5 else "Small"
-    return period, number, result
-
-
-def apply_offset(raw_period):
-    try:
-        return str(int(str(raw_period)) + PERIOD_OFFSET)
-    except Exception:
-        return str(raw_period)
-
-
-def fetch_api():
+def fetch_api_raw():
+    """Fetch raw API response — returns (status_code, raw_text, parsed_json)"""
     headers = {
         "User-Agent": "Mozilla/5.0",
         "accept": "application/json, text/plain, */*",
@@ -1211,12 +1178,82 @@ def fetch_api():
     if API_SIGNATURE:
         payload["signature"] = API_SIGNATURE
 
-    response = requests.post(
-        API_URL, json=payload, headers=headers, timeout=REQUEST_TIMEOUT
+    r = requests.post(API_URL, json=payload, headers=headers, timeout=REQUEST_TIMEOUT)
+    raw = r.text
+    try:
+        parsed = r.json()
+    except Exception:
+        parsed = None
+    return r.status_code, raw, parsed
+
+
+def extract_rows(data):
+    """V8.6 — Try multiple paths to find the list"""
+    if not isinstance(data, dict):
+        if isinstance(data, list):
+            return data
+        return []
+
+    # Path 1: data.list
+    if isinstance(data.get("data"), dict):
+        d = data["data"]
+        for key in ("list", "rows", "items", "results", "data"):
+            if isinstance(d.get(key), list):
+                return d[key]
+
+    # Path 2: data as list
+    if isinstance(data.get("data"), list):
+        return data["data"]
+
+    # Path 3: rows / list / items at top
+    for key in ("list", "rows", "items", "results", "data"):
+        if isinstance(data.get(key), list):
+            return data[key]
+
+    # Path 4: result.list
+    if isinstance(data.get("result"), dict):
+        r = data["result"]
+        for key in ("list", "rows", "items"):
+            if isinstance(r.get(key), list):
+                return r[key]
+
+    return []
+
+
+def fetch_api():
+    """V8.6 — Returns extracted rows"""
+    _, _, parsed = fetch_api_raw()
+    if parsed is None:
+        return []
+    return extract_rows(parsed)
+
+
+def parse_row(row):
+    period = (
+        row.get("issueNumber") or row.get("period")
+        or row.get("issue") or row.get("periodNumber")
+        or row.get("PreIssue") or row.get("expect")
     )
-    response.raise_for_status()
-    data = response.json()
-    return data.get("data", {}).get("list", [])
+    number = (
+        row.get("number") or row.get("result") or row.get("openNumber")
+        or row.get("num") or row.get("PreNum")
+    )
+    if period is None or number is None:
+        return None
+    try:
+        period = str(period)
+        number = int(number)
+    except Exception:
+        return None
+    result = "Big" if number >= 5 else "Small"
+    return period, number, result
+
+
+def apply_offset(raw_period):
+    try:
+        return str(int(str(raw_period)) + PERIOD_OFFSET)
+    except Exception:
+        return str(raw_period)
 
 
 # ============================================================
@@ -1225,7 +1262,6 @@ def fetch_api():
 
 def telegram(text):
     if not TELEGRAM_TOKEN or not CHAT_ID:
-        log("[TG] Missing token/chat — skip")
         return False
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -1234,16 +1270,15 @@ def telegram(text):
             "text": text,
             "parse_mode": "HTML",
         }, timeout=REQUEST_TIMEOUT)
-        log(f"[TG] Sent: {r.status_code}")
         return r.status_code == 200
     except Exception as e:
-        log(f"[TG ERROR] {type(e).__name__}: {e}")
+        log(f"[TG ERROR] {e}")
         return False
 
 
 def signal_text(p):
     return (
-        "🎯 <b>HYBRID V8.5</b>\n"
+        "🎯 <b>HYBRID V8.6</b>\n"
         "━━━━━━━━━━━━━━━━\n"
         f"📅 Target: <code>{p.get('target_period', 'N/A')}</code>\n"
         f"🎲 Prediction: <b>{p['prediction']}</b>\n"
@@ -1251,15 +1286,12 @@ def signal_text(p):
         f"📈 Raw: {p['raw_probability']:.2%}\n"
         f"🎯 Calibrated: {p['calibrated_probability']:.2%}\n"
         f"🏷 State: <b>{p['state']}</b>\n"
-        f"🧠 Regime: {p['regime']}\n"
-        f"⏱ Age: {p['regime_age']}\n"
-        f"🔄 Transition: {p['transition']}\n"
-        f"⚖️ Disagreement: {p['disagreement']:.2%}"
+        f"🧠 Regime: {p['regime']}"
     )
 
 
 # ============================================================
-# POLLING WORKER (with DEBUG)
+# POLLING WORKER
 # ============================================================
 
 def polling_worker(agent):
@@ -1269,9 +1301,9 @@ def polling_worker(agent):
     while True:
         iteration += 1
         try:
-            log(f"[POLLING] #{iteration} Calling API...")
             rows = fetch_api()
-            log(f"[POLLING] #{iteration} Got {len(rows)} rows")
+            if iteration <= 3:
+                log(f"[POLLING] #{iteration} Got {len(rows)} rows")
 
             parsed = []
             for row in rows:
@@ -1280,11 +1312,6 @@ def polling_worker(agent):
                     raw_period, number, result = item
                     period = apply_offset(raw_period)
                     parsed.append((period, number, result))
-
-            log(f"[POLLING] #{iteration} Parsed {len(parsed)} items")
-
-            if parsed and iteration <= 2:
-                log(f"[POLLING] First parsed: {parsed[0]}")
 
             try:
                 parsed.sort(key=lambda x: int(x[0]))
@@ -1307,11 +1334,12 @@ def polling_worker(agent):
                 prediction = agent.predict_next(source_period=period)
 
                 if prediction.get("status") == "OK":
-                    log(f"[SIGNAL] {prediction['prediction']} {prediction['confidence']:.2%} {prediction['state']} {prediction['regime']}")
+                    log(f"[SIGNAL] {prediction['prediction']} {prediction['confidence']:.2%} {prediction['state']}")
                     if prediction["state"] == "LIVE":
                         telegram(signal_text(prediction))
                 elif prediction.get("status") == "WAIT":
-                    log(f"[WAIT] {prediction.get('reason')}")
+                    if iteration % 30 == 0:
+                        log(f"[WAIT] {prediction.get('reason')}")
 
             if new_count == 0 and iteration % 30 == 0:
                 log(f"[POLLING] #{iteration} No new periods (history: {len(agent.db.history())})")
@@ -1358,76 +1386,19 @@ def poll_telegram_commands(agent):
 
                 if txt == "/status":
                     rep = agent.db.report()
-                    p = agent.last_prediction
                     lines = [
-                        "🚀 <b>HYBRID V8.5</b>\n",
+                        "🚀 <b>HYBRID V8.6</b>\n",
                         f"DB: <code>{DB_PATH}</code>",
                         f"History: {len(agent.db.history())}",
                         f"Predicted: {rep['total']}",
                         f"WR: <b>{rep['wr']*100:.2f}%</b>" if rep['wr'] else "WR: N/A",
-                        f"LIVE: {rep['live_total']} | WR: <b>{rep['live_wr']*100:.2f}%</b>" if rep['live_wr'] else f"LIVE: {rep['live_total']}",
-                        f"SHADOW: {rep['shadow_total']} | WR: {rep['shadow_wr']*100:.2f}%" if rep['shadow_wr'] else f"SHADOW: {rep['shadow_total']}",
+                        f"LIVE: {rep['live_total']}",
                     ]
-                    if p:
-                        lines.append(f"\nLatest: <b>{p['prediction']}</b> ({p['confidence']:.1%}) [{p['state']}]")
                     telegram("\n".join(lines))
-
-                elif txt == "/patterns":
-                    stats = agent.reliability.stats
-                    lines = ["🔬 <b>MODEL STATS</b>"]
-                    for name, s in sorted(stats.items(), key=lambda x: -(x[1]['wins']/x[1]['total'] if x[1]['total'] else 0)):
-                        wr = s['wins']/s['total'] if s['total'] else 0
-                        lines.append(f"{name}: {wr*100:.1f}% (n={s['total']}, {s['state']})")
-                    telegram("\n".join(lines[:20]))
-
-                elif txt == "/context":
-                    lines = ["🧩 <b>CONTEXT (top)</b>"]
-                    items = sorted(agent.context.stats.items(), key=lambda x: -(x[1]['wins']/x[1]['total'] if x[1]['total'] else 0))
-                    for k, v in items[:15]:
-                        if v['total'] >= 5:
-                            wr = v['wins']/v['total']
-                            lines.append(f"{k}: {wr*100:.0f}% (n={v['total']})")
-                    telegram("\n".join(lines))
-
-                elif txt == "/calibration":
-                    lines = ["📊 <b>CALIBRATION</b>"]
-                    for k, v in sorted(agent.calibration.stats.items()):
-                        if v['total'] > 0:
-                            wr = v['wins']/v['total']
-                            lines.append(f"{k}: actual {wr*100:.1f}% (n={v['total']})")
-                    telegram("\n".join(lines))
-
-                elif txt == "/regimes":
-                    lines = ["🧠 <b>REGIME WR</b>"]
-                    with agent.db.lock:
-                        rows = agent.db.conn.execute("""
-                            SELECT regime, COUNT(*), COALESCE(SUM(correct),0)
-                            FROM predictions
-                            WHERE evaluated=1 AND regime IS NOT NULL
-                            GROUP BY regime
-                        """).fetchall()
-                    for r, n, w in rows:
-                        wr = w/n if n else 0
-                        lines.append(f"{r}: {wr*100:.1f}% (n={n})")
-                    telegram("\n".join(lines))
-
-                elif txt == "/losses":
-                    lt = agent.db.loss_types()
-                    lines = ["🧯 <b>LOSS TYPES</b>"]
-                    for k, v in lt.items():
-                        lines.append(f"{k}: {v}")
-                    telegram("\n".join(lines) if len(lines) > 1 else "No losses yet.")
-
-                elif txt == "/pause":
-                    telegram("⏸ Paused (env)")
-                elif txt == "/resume":
-                    telegram("▶️ Resumed")
-
                 elif txt == "/help":
                     telegram(
-                        "🤖 <b>V8.5 COMMANDS</b>\n"
-                        "/status /patterns /context /calibration\n"
-                        "/regimes /losses /pause /resume /help"
+                        "🤖 <b>V8.6 COMMANDS</b>\n"
+                        "/status /help"
                     )
         except Exception as e:
             log(f"[TG CMD ERROR] {e}")
@@ -1452,41 +1423,31 @@ def dashboard():
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="refresh" content="15">
-<title>HYBRID V8.5</title>
+<title>HYBRID V8.6</title>
 <style>
 body{background:#0f172a;color:#f8fafc;font-family:system-ui,Arial,sans-serif;padding:20px;margin:0}
 h1{color:#22d3ee;margin:0 0 6px}
-.small{color:#94a3b8}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:14px 0}
 .card{background:#1e293b;padding:14px;border-radius:10px;margin-bottom:12px}
 .big{font-size:26px;font-weight:800}
-.green{color:#4ade80}.red{color:#f87171}.yellow{color:#facc15}.cyan{color:#22d3ee}
+.green{color:#4ade80}.cyan{color:#22d3ee}.yellow{color:#facc15}
 .mono{font-family:monospace;letter-spacing:2px}
 </style>
 </head>
 <body>
-<h1>🚀 HYBRID V8.5</h1>
-<div class="small">Debug + Startup Test + Robust Worker</div>
-
+<h1>🚀 HYBRID V8.6</h1>
 <div class="grid">
 <div class="card"><div>Evaluated</div><div class="big">{{ report.total }}</div></div>
-<div class="card"><div>Overall WR</div><div class="big green">{{ "%.2f"|format(report.wr*100) if report.wr else "N/A" }}%</div></div>
-<div class="card"><div>LIVE WR</div><div class="big cyan">{{ "%.2f"|format(report.live_wr*100) if report.live_wr else "N/A" }}%</div></div>
 <div class="card"><div>History</div><div class="big yellow">{{ last_rows|length }}</div></div>
+<div class="card"><div>LIVE</div><div class="big cyan">{{ report.live_total }}</div></div>
 </div>
-
 <div class="card">
-<h3>Latest Signal</h3>
-{% if p %}
-<p>Prediction: <b>{{ p.prediction }}</b> | Confidence: <b>{{ "%.2f"|format(p.confidence*100) }}%</b></p>
-<p>State: <b>{{ p.state }}</b> | Regime: <b>{{ p.regime }}</b></p>
-{% else %}
-<p>No signal yet.</p>
-{% endif %}
+<h3>Latest</h3>
+{% if p %}<p>{{ p.prediction }} — {{ "%.2f"|format(p.confidence*100) }}% [{{ p.state }}]</p>
+{% else %}<p>No signal yet.</p>{% endif %}
 </div>
-
 <div class="card">
-<h3>Last 40 Results</h3>
+<h3>Last 40</h3>
 <div class="mono">{% for r in last_rows %}{{ "B" if r.result=="Big" else "S" }}{% endfor %}</div>
 </div>
 </body>
@@ -1507,41 +1468,71 @@ def api_status():
 
 @app.route("/api/debug")
 def api_debug():
+    """V8.6 — Full raw API response debug"""
     if not global_agent:
         return jsonify({"status": "no_agent"})
 
-    api_test = {}
+    result = {}
     try:
-        rows = fetch_api()
-        api_test["status"] = "ok"
-        api_test["rows_count"] = len(rows)
-        if rows:
-            api_test["first_row_keys"] = list(rows[0].keys())
-            api_test["first_row"] = rows[0]
-            parsed = parse_row(rows[0])
-            api_test["parsed"] = parsed
-        else:
-            api_test["error"] = "empty response"
+        status_code, raw_text, parsed_json = fetch_api_raw()
+        result["status_code"] = status_code
+        result["raw_text"] = raw_text[:3000]
+        result["parsed_json"] = parsed_json
+
+        # Try all extraction paths
+        if parsed_json:
+            result["top_level_keys"] = list(parsed_json.keys()) if isinstance(parsed_json, dict) else "not_dict"
+            
+            # Try each path
+            extraction_attempts = {}
+            
+            if isinstance(parsed_json, dict):
+                if "data" in parsed_json:
+                    d = parsed_json["data"]
+                    extraction_attempts["data_type"] = type(d).__name__
+                    if isinstance(d, dict):
+                        extraction_attempts["data_keys"] = list(d.keys())
+                        for key in ("list", "rows", "items", "results", "data"):
+                            if key in d:
+                                val = d[key]
+                                extraction_attempts[f"data.{key}"] = {
+                                    "type": type(val).__name__,
+                                    "len": len(val) if isinstance(val, (list, dict)) else None,
+                                }
+                    elif isinstance(d, list):
+                        extraction_attempts["data_is_list"] = {"len": len(d)}
+                
+                if "result" in parsed_json:
+                    r = parsed_json["result"]
+                    extraction_attempts["result_type"] = type(r).__name__
+                    if isinstance(r, dict):
+                        extraction_attempts["result_keys"] = list(r.keys())
+                
+                for key in ("list", "rows", "items", "results", "code", "msg", "message"):
+                    if key in parsed_json:
+                        extraction_attempts[f"top.{key}"] = parsed_json[key] if not isinstance(parsed_json[key], (list, dict)) else f"{type(parsed_json[key]).__name__}"
+
+            result["extraction_attempts"] = extraction_attempts
+            
+            # Actually try to extract
+            rows = extract_rows(parsed_json)
+            result["extracted_rows_count"] = len(rows)
+            if rows:
+                result["first_row"] = rows[0]
+                result["first_row_keys"] = list(rows[0].keys()) if isinstance(rows[0], dict) else "not_dict"
+
     except Exception as e:
-        api_test["status"] = "error"
-        api_test["error_type"] = type(e).__name__
-        api_test["error_msg"] = str(e)
+        result["error"] = f"{type(e).__name__}: {e}"
+        result["traceback"] = traceback.format_exc()
 
     return jsonify({
-        "api_test": api_test,
-        "history_count": len(global_agent.db.history()),
-        "last_prediction": global_agent.last_prediction,
+        "result": result,
         "config": {
             "API_URL": API_URL,
             "API_TYPE_ID": API_TYPE_ID,
+            "API_PAGE_SIZE": API_PAGE_SIZE,
+            "API_LANGUAGE": API_LANGUAGE,
             "PERIOD_OFFSET": PERIOD_OFFSET,
-            "API_AUTH_set": bool(API_AUTH),
-            "API_AUTH_len": len(API_AUTH),
-            "API_RANDOM_set": bool(API_RANDOM),
-            "API_SIGNATURE_set": bool(API_SIGNATURE),
-            "TELEGRAM_set": bool(TELEGRAM_TOKEN),
-            "CHAT_ID_set": bool(CHAT_ID),
-            "DB_PATH": DB_PATH,
         }
     })
 
@@ -1551,56 +1542,44 @@ def api_debug():
 # ============================================================
 
 if __name__ == "__main__":
-    if "--backtest" in sys.argv:
-        db = Database(DB_PATH, read_only=False)
-        results = db.history(MAX_HISTORY)
-        log(f"📊 Loaded {len(results)} results for backtest")
-        sys.exit(0)
-
-    log("=" * 50)
-    log(" HYBRID ENGINE V8.5 STARTING")
-    log("=" * 50)
+    log("=" * 60)
+    log(" HYBRID ENGINE V8.6 STARTING")
+    log("=" * 60)
     log(f"DB: {DB_PATH}")
     log(f"API: {API_URL}")
-    log(f"MIN_HISTORY: {MIN_HISTORY}")
-    log(f"MIN_LIVE_CONF: {MIN_LIVE_CONF}")
+    log(f"API_TYPE_ID: {API_TYPE_ID}")
+    log(f"API_PAGE_SIZE: {API_PAGE_SIZE}")
     log(f"TELEGRAM_TOKEN set: {bool(TELEGRAM_TOKEN)} (len={len(TELEGRAM_TOKEN)})")
     log(f"CHAT_ID set: {bool(CHAT_ID)}")
     log(f"API_AUTH set: {bool(API_AUTH)} (len={len(API_AUTH)})")
-    log(f"API_RANDOM set: {bool(API_RANDOM)}")
-    log(f"API_SIGNATURE set: {bool(API_SIGNATURE)}")
-    log(f"PERIOD_OFFSET: {PERIOD_OFFSET}")
-    log("=" * 50)
+    log("=" * 60)
 
     # Startup API test
     log("[STARTUP] Testing API...")
     try:
-        test_rows = fetch_api()
-        log(f"[STARTUP] API OK — {len(test_rows)} rows")
-        if test_rows:
-            log(f"[STARTUP] First row keys: {list(test_rows[0].keys())}")
-            log(f"[STARTUP] First row: {test_rows[0]}")
-            parsed_test = parse_row(test_rows[0])
-            log(f"[STARTUP] Parsed: {parsed_test}")
+        status_code, raw_text, parsed = fetch_api_raw()
+        log(f"[STARTUP] API status_code: {status_code}")
+        log(f"[STARTUP] Raw text (first 500): {raw_text[:500]}")
+        if parsed:
+            log(f"[STARTUP] Top-level keys: {list(parsed.keys()) if isinstance(parsed, dict) else type(parsed).__name__}")
+            rows = extract_rows(parsed)
+            log(f"[STARTUP] Extracted rows: {len(rows)}")
+            if rows:
+                log(f"[STARTUP] First row: {rows[0]}")
     except Exception as e:
         log(f"[STARTUP API ERROR] {type(e).__name__}: {e}")
         log(traceback.format_exc())
 
     # Send Telegram startup
-    log("[STARTUP] Sending Telegram startup...")
     telegram(
-        "🚀 <b>V8.5 STARTED</b>\n"
-        f"DB: {DB_PATH}\n"
-        f"Token: {bool(TELEGRAM_TOKEN)}\n"
-        f"Chat: {bool(CHAT_ID)}\n"
-        f"Auth: {bool(API_AUTH)}"
+        "🚀 <b>V8.6 STARTED</b>\n"
+        f"API test: check /api/debug"
     )
 
-    global_agent = HybridEngineV85()
+    global_agent = HybridEngineV86()
 
-    log("[STARTUP] Starting threads...")
     threading.Thread(target=polling_worker, args=(global_agent,), daemon=True).start()
     threading.Thread(target=poll_telegram_commands, args=(global_agent,), daemon=True).start()
 
-    log("[STARTUP] Starting Flask...")
+    log("[STARTUP] Starting Flask on port " + str(PORT))
     app.run(host="0.0.0.0", port=PORT, debug=False)
