@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-HYBRID V6.1 (Unlimited Martingale)
+HYBRID V7.0
 Data-driven Big/Small signal engine + Telegram + Flask dashboard.
-- No automatic betting execution.
-- Step tracking display only (Unlimited steps, resets only on Win).
+- Signal-only bot (no automatic betting).
+- Step tracking (no cap) — increases until WIN, resets on WIN.
 - Loss silent, Win shown.
+- Grade system (A+ / A / B / C / D) with provisional thresholds.
+- Regime-specific WR tracking.
 - Configure secrets through environment variables.
 """
 
@@ -43,7 +45,7 @@ PERIOD_OFFSET = int(os.getenv("PERIOD_OFFSET", "2"))
 POLL_SECONDS = float(os.getenv("POLL_SECONDS", "2.0"))
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "10"))
 
-DB_PATH = os.getenv("DB_PATH", "hybrid_v61.db")
+DB_PATH = os.getenv("DB_PATH", "hybrid_v7.db")
 MIN_HISTORY = int(os.getenv("MIN_HISTORY", "30"))
 MAX_HISTORY = int(os.getenv("MAX_HISTORY", "1000"))
 
@@ -55,11 +57,18 @@ RECENT_WINDOW = int(os.getenv("RECENT_WINDOW", "30"))
 CALIBRATION_MIN_SAMPLES = int(os.getenv("CALIBRATION_MIN_SAMPLES", "12"))
 
 BASE_BET = float(os.getenv("BASE_BET", "1.0"))
-# STEP_CAP ဖယ်ရှားလိုက်ပါပြီ
 PORT = int(os.getenv("PORT", "8080"))
 
 API_RANDOM = os.getenv("API_RANDOM", "036263f367384d418be07465793c8da8")
 API_SIGNATURE = os.getenv("API_SIGNATURE", "55F4FD150F15F090B943374F3C9BE78B")
+
+# ============================================================
+# GRADE CONFIG (V7)
+# ============================================================
+GRADE_A_PLUS = float(os.getenv("GRADE_A_PLUS", "0.75"))
+GRADE_A      = float(os.getenv("GRADE_A",      "0.65"))
+GRADE_B      = float(os.getenv("GRADE_B",      "0.55"))
+MIN_GRADE    = os.getenv("MIN_GRADE", "B")  # A+ / A / B / C / D
 
 app = Flask(__name__)
 global_agent = None
@@ -175,6 +184,8 @@ class DataEngine:
                     regime TEXT,
                     entropy REAL,
                     transition_rate REAL,
+                    grade TEXT,
+                    grade_score REAL,
                     models_json TEXT,
                     groups_json TEXT,
                     evaluated INTEGER DEFAULT 0,
@@ -182,6 +193,8 @@ class DataEngine:
                     correct INTEGER
                 )
             """)
+            # Migration for older DBs
+            self._migrate(cur)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS pattern_stats (
                     name TEXT PRIMARY KEY,
@@ -205,6 +218,16 @@ class DataEngine:
                 )
             """)
             self.conn.commit()
+
+    def _migrate(self, cur):
+        try:
+            cols = [r[1] for r in cur.execute("PRAGMA table_info(predictions)").fetchall()]
+            if "grade" not in cols:
+                cur.execute("ALTER TABLE predictions ADD COLUMN grade TEXT")
+            if "grade_score" not in cols:
+                cur.execute("ALTER TABLE predictions ADD COLUMN grade_score REAL")
+        except Exception:
+            pass
 
     def save_result(self, period, number, result):
         with self.lock:
@@ -247,8 +270,9 @@ class DataEngine:
                 INSERT INTO predictions (
                     created_at, source_period, target_period,
                     prediction, probability, edge, reason, regime,
-                    entropy, transition_rate, models_json, groups_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    entropy, transition_rate, grade, grade_score,
+                    models_json, groups_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 utc_now(),
                 p.get("source_period"),
@@ -260,6 +284,8 @@ class DataEngine:
                 p.get("regime", ""),
                 p.get("entropy", 0),
                 p.get("transition_rate", 0),
+                p.get("grade", ""),
+                p.get("grade_score", 0),
                 json.dumps(p.get("models", {}), ensure_ascii=False),
                 json.dumps(p.get("groups", {}), ensure_ascii=False),
             ))
@@ -912,9 +938,116 @@ class SignalFilter:
 
 
 # ============================================================
-# HYBRID V6.1 ENGINE
+# GRADE SYSTEM (V7)
 # ============================================================
-class HybridV61:
+class RegimeWRTracker:
+    """Track historical WR per regime (loaded from DB)."""
+
+    def __init__(self, db):
+        self.db = db
+        self.stats = defaultdict(lambda: {"total": 0, "wins": 0})
+        self._load()
+
+    def _load(self):
+        try:
+            with self.db.lock:
+                rows = self.db.conn.execute("""
+                    SELECT regime, correct FROM predictions
+                    WHERE evaluated=1
+                      AND regime IS NOT NULL
+                      AND correct IS NOT NULL
+                """).fetchall()
+                for regime, correct in rows:
+                    self.stats[regime]["total"] += 1
+                    self.stats[regime]["wins"] += int(correct)
+        except Exception:
+            pass
+
+    def update(self, regime, correct):
+        self.stats[regime]["total"] += 1
+        self.stats[regime]["wins"] += int(correct)
+
+    def wr(self, regime):
+        s = self.stats.get(regime, {"total": 0, "wins": 0})
+        if s["total"] < 10:
+            return 0.55  # prior for small samples
+        return s["wins"] / s["total"]
+
+    def all_stats(self):
+        out = {}
+        for regime, s in self.stats.items():
+            out[regime] = {
+                "total": s["total"],
+                "wins": s["wins"],
+                "wr": s["wins"] / s["total"] if s["total"] else 0.0,
+            }
+        return out
+
+
+class GradeCalculator:
+    """Signal quality → grade (A+ / A / B / C / D)."""
+
+    def __init__(self, regime_tracker):
+        self.regime_tracker = regime_tracker
+
+    def calculate(self, prob, agreement, regime_name, entropy):
+        # 1. Probability strength: 0.5 → 0.0, 0.75+ → 1.0
+        prob_strength = clamp((prob - 0.5) * 4.0, 0.0, 1.0)
+
+        # 2. Model agreement: 0.0 - 1.0
+        agreement_score = clamp(agreement, 0.0, 1.0)
+
+        # 3. Regime historical WR: 0.5 → 0.0, 0.75+ → 1.0
+        regime_wr = self.regime_tracker.wr(regime_name)
+        regime_score = clamp((regime_wr - 0.5) * 4.0, 0.0, 1.0)
+
+        # 4. Entropy: low = better
+        entropy_score = clamp(1.0 - entropy, 0.0, 1.0)
+
+        score = (
+            0.40 * prob_strength +
+            0.25 * agreement_score +
+            0.25 * regime_score +
+            0.10 * entropy_score
+        )
+
+        if score >= GRADE_A_PLUS: grade = "A+"
+        elif score >= GRADE_A:    grade = "A"
+        elif score >= GRADE_B:    grade = "B"
+        elif score >= 0.45:       grade = "C"
+        else:                     grade = "D"
+
+        return {
+            "grade": grade,
+            "score": score,
+            "breakdown": {
+                "prob_strength": prob_strength,
+                "agreement": agreement_score,
+                "regime": regime_score,
+                "entropy": entropy_score,
+            }
+        }
+
+    @staticmethod
+    def passes(grade, min_grade=MIN_GRADE):
+        order = {"A+": 5, "A": 4, "B": 3, "C": 2, "D": 1}
+        return order.get(grade, 0) >= order.get(min_grade, 3)
+
+    @staticmethod
+    def emoji(grade):
+        return {
+            "A+": "🔥",
+            "A":  "⭐",
+            "B":  "✅",
+            "C":  "⚠️",
+            "D":  "🛑",
+        }.get(grade, "❓")
+
+
+# ============================================================
+# HYBRID V7 ENGINE
+# ============================================================
+class HybridV7:
     def __init__(self):
         global global_agent
         global_agent = self
@@ -931,6 +1064,13 @@ class HybridV61:
         self.calibrator = Calibrator(self.db)
         self.fusion = EvidenceFusion(self.tracker)
         self.signal_filter = SignalFilter()
+
+        # V7 — Grade system
+        self.regime_tracker = RegimeWRTracker(self.db)
+        self.grader = GradeCalculator(self.regime_tracker)
+        self.grade_counts = defaultdict(int)
+        self.grade_wins = defaultdict(int)
+
         self.lock = threading.RLock()
 
         self.active_prediction = None
@@ -955,11 +1095,12 @@ class HybridV61:
         self.last_probability = 0.0
         self.last_edge = 0.0
         self.last_regime = "UNKNOWN"
+        self.last_grade = "None"
 
         self.api_errors = 0
         self.last_api_error = ""
 
-        print(f"🚀 HYBRID V6.1 loaded {len(self.history)} results", flush=True)
+        print(f"🚀 HYBRID V7.0 loaded {len(self.history)} results", flush=True)
 
     # --------------------------------------------------------
     # Telegram
@@ -982,7 +1123,7 @@ class HybridV61:
             return False
 
     # --------------------------------------------------------
-    # Evaluation (Win Only Shown - Unlimited Martingale)
+    # Evaluation
     # --------------------------------------------------------
     def evaluate_previous(self, actual, current_period):
         if not self.active_prediction:
@@ -992,14 +1133,21 @@ class HybridV61:
         predicted = p["prediction"]
         correct = predicted == actual
         step = p["step"]
+        grade = p.get("grade", "?")
+        regime_name = p.get("regime", "UNKNOWN")
 
         with self.lock:
+            # Update regime WR
+            self.regime_tracker.update(regime_name, correct)
+
             if correct:
                 # ✅ WIN → Step Reset
                 self.total_wins += 1
                 self.consecutive_wins += 1
                 self.consecutive_losses = 0
                 self.win_by_step[step] += 1
+                self.grade_counts[grade] += 1
+                self.grade_wins[grade] += 1
                 self.calibrator.update(p["probability"], True)
 
                 for model in p["models"].values():
@@ -1010,19 +1158,20 @@ class HybridV61:
 
                 self.current_step = 0
 
-                # ✅ Win Only Message
+                emoji = self.grader.emoji(grade)
                 self.send_telegram(
-                    f"✅ <b>WIN</b> — Step {step + 1}\n"
-                    f"🔢 {actual}\n"
+                    f"✅ <b>WIN</b>\n"
+                    f"🔢 {actual} | {emoji} {grade}\n"
                     f"🔄 Step Reset → <b>Step 1</b>\n"
                     f"📊 WR: {self.get_wr()*100:.1f}%"
                 )
             else:
-                # ❌ LOSS → Step +1 (Silent & Unlimited)
+                # ❌ LOSS → Step +1 (Silent, No Cap)
                 self.total_losses += 1
                 self.consecutive_losses += 1
                 self.consecutive_wins = 0
                 self.loss_by_step[step] += 1
+                self.grade_counts[grade] += 1  # count attempt
                 self.calibrator.update(p["probability"], False)
 
                 wrong = []
@@ -1036,13 +1185,12 @@ class HybridV61:
 
                 self.db.save_error(
                     p.get("source_period"), predicted, actual,
-                    p["regime"], p["models"], wrong, correct_models
+                    regime_name, p["models"], wrong, correct_models
                 )
 
                 if p.get("db_id"):
                     self.db.evaluate_prediction(p["db_id"], actual)
 
-                # Step Cap ဖယ်ရှားလိုက်ပြီဖြစ်သောကြောင့် အကန့်အသတ်မရှိ ဆက်လက်တိုးမည်
                 self.current_step += 1
 
             self.active_prediction = None
@@ -1059,6 +1207,8 @@ class HybridV61:
                 "signal": None, "probability": 0.0, "edge": 0.0,
                 "reason": "WARMUP", "regime": "UNKNOWN",
                 "models": {}, "groups": {},
+                "grade": "?",
+                "grade_score": 0.0,
             }
 
         regime = self.regime_detector.detect(arr)
@@ -1069,6 +1219,8 @@ class HybridV61:
                 "signal": None, "probability": 0.0, "edge": 0.0,
                 "reason": "NO_MODEL_EVIDENCE", "regime": regime["name"],
                 "models": {}, "groups": {},
+                "grade": "?",
+                "grade_score": 0.0,
             }
 
         fusion = self.fusion.combine(models, regime)
@@ -1087,6 +1239,33 @@ class HybridV61:
                 "models": models, "groups": fusion["groups"],
                 "agreement": fusion["agreement"],
                 "disagreement": fusion["disagreement"],
+                "grade": "?",
+                "grade_score": 0.0,
+            }
+
+        # V7 — Grade
+        grade_result = self.grader.calculate(
+            prob=calibrated,
+            agreement=fusion["agreement"],
+            regime_name=regime["name"],
+            entropy=regime["entropy"],
+        )
+        grade = grade_result["grade"]
+        grade_score = grade_result["score"]
+
+        if not self.grader.passes(grade):
+            return {
+                "signal": None,
+                "probability": calibrated,
+                "edge": edge,
+                "reason": f"LOW_GRADE_{grade}",
+                "regime": regime["name"],
+                "grade": grade,
+                "grade_score": grade_score,
+                "models": models,
+                "groups": fusion["groups"],
+                "agreement": fusion["agreement"],
+                "disagreement": fusion["disagreement"],
             }
 
         reason = (
@@ -1099,6 +1278,9 @@ class HybridV61:
             "edge": edge,
             "reason": reason,
             "regime": regime["name"],
+            "grade": grade,
+            "grade_score": grade_score,
+            "grade_breakdown": grade_result["breakdown"],
             "models": models,
             "groups": fusion["groups"],
             "agreement": fusion["agreement"],
@@ -1119,7 +1301,7 @@ class HybridV61:
             if self.db.has_period(period):
                 return
 
-            # 1) Evaluate previous (Win Only Shown)
+            # 1) Evaluate previous
             self.evaluate_previous(result, str(period))
 
             # 2) Save
@@ -1132,6 +1314,7 @@ class HybridV61:
             if self.is_paused:
                 self.last_signal = "PAUSED"
                 self.last_reason = "PAUSED"
+                self.last_grade = "None"
                 return
 
             # 3) Generate
@@ -1143,16 +1326,31 @@ class HybridV61:
             self.last_probability = prediction["probability"]
             self.last_edge = prediction["edge"]
             self.last_regime = prediction["regime"]
+            self.last_grade = prediction.get("grade", "?")
 
             if prediction["signal"] is None:
                 self.total_skips += 1
-                self.send_telegram(
-                    f"⏸️ <b>SKIP</b>\n"
-                    f"📅 {period}\n"
-                    f"📌 {prediction['reason']}\n"
-                    f"📊 Prob: {prediction['probability']*100:.1f}% | "
-                    f"Edge: {prediction['edge']*100:.1f}pp"
-                )
+
+                reason = prediction["reason"]
+                grade = prediction.get("grade", "?")
+                score = prediction.get("grade_score", 0.0)
+
+                if reason.startswith("LOW_GRADE_") and grade != "?":
+                    emoji = self.grader.emoji(grade)
+                    self.send_telegram(
+                        f"⏸️ <b>SKIP</b>\n"
+                        f"{emoji} Grade: {grade} ({score:.2f})\n"
+                        f"\n"
+                        f"📅 {period}\n"
+                        f"📌 Below threshold"
+                    )
+                else:
+                    self.send_telegram(
+                        f"⏸️ <b>SKIP</b>\n"
+                        f"\n"
+                        f"📅 {period}\n"
+                        f"📌 {reason}"
+                    )
                 return
 
             # 4) Signal
@@ -1181,6 +1379,8 @@ class HybridV61:
                 "regime": prediction["regime"],
                 "entropy": self.regime_detector.detect(list(self.history))["entropy"],
                 "transition_rate": transition_rate(list(self.history)[-20:]),
+                "grade": prediction.get("grade", ""),
+                "grade_score": prediction.get("grade_score", 0.0),
                 "models": model_list,
                 "groups": prediction.get("groups", {}),
             }
@@ -1193,17 +1393,20 @@ class HybridV61:
                 "step": self.current_step,
             }
 
-            # ✅ Signal Message (Shows current step multiplier)
+            grade = prediction.get("grade", "?")
+            grade_emoji = self.grader.emoji(grade)
+            grade_score = prediction.get("grade_score", 0.0)
+
+            # ✅ Signal Message
             self.send_telegram(
-                f"🚀 <b>HYBRID V6.1 SIGNAL</b>\n"
-                f"📅 Period: {period}\n"
                 f"🎯 <b>{prediction['signal'].upper()}</b>\n"
-                f"💰 <b>Step {self.current_step + 1}</b> "
-                f"({2**self.current_step}x)\n"
+                f"{grade_emoji} <b>Grade: {grade}</b> ({grade_score:.2f})\n"
+                f"\n"
+                f"📅 {period}\n"
+                f"💰 Step {self.current_step + 1} ({2**self.current_step}x)\n"
                 f"📊 Prob: {prediction['probability']*100:.1f}% | "
                 f"Edge: {prediction['edge']*100:.1f}pp\n"
-                f"📌 {prediction['regime']} | "
-                f"Agree: {prediction.get('agreement', 0)*100:.0f}%"
+                f"📌 {prediction['regime']}"
             )
 
     @staticmethod
@@ -1227,15 +1430,23 @@ class HybridV61:
         total = self.total_wins
         return wins / total if total else 0.0
 
-    # Step >= 4 (index >= 3) အကြိမ်အရေအတွက်အားလုံးပေါင်း
-    def get_win_s4_plus(self):
-        return sum(count for step, count in self.win_by_step.items() if step >= 3)
+    def grade_stats(self):
+        out = {}
+        for grade in ["A+", "A", "B", "C", "D"]:
+            total = self.grade_counts.get(grade, 0)
+            wins = self.grade_wins.get(grade, 0)
+            out[grade] = {
+                "total": total,
+                "wins": wins,
+                "wr": wins / total if total else 0.0,
+            }
+        return out
 
     def dashboard_state(self):
         arr = list(self.history)
         regime = self.regime_detector.detect(arr)
         return {
-            "version": "HYBRID V6.1",
+            "version": "HYBRID V7.0",
             "history": len(arr),
             "signals": self.total_signals,
             "skips": self.total_skips,
@@ -1252,8 +1463,12 @@ class HybridV61:
             "last_reason": self.last_reason,
             "last_probability": self.last_probability,
             "last_edge": self.last_edge,
+            "last_grade": self.last_grade,
             "regime": regime,
             "db": self.db.stats(),
+            "grade_stats": self.grade_stats(),
+            "regime_stats": self.regime_tracker.all_stats(),
+            "min_grade": MIN_GRADE,
             "api_errors": self.api_errors,
             "last_api_error": self.last_api_error,
         }
@@ -1297,8 +1512,9 @@ def poll_telegram(agent):
                 if txt == "/status":
                     s = agent.dashboard_state()
                     wbs = agent.win_by_step
+                    gs = s["grade_stats"]
                     agent.send_telegram(
-                        f"🚀 <b>HYBRID V6.1 STATUS</b>\n\n"
+                        f"🚀 <b>HYBRID V7.0 STATUS</b>\n\n"
                         f"Mode: {'PAUSED 🛑' if s['paused'] else 'RUNNING 🟢'}\n"
                         f"History: {s['history']}\n"
                         f"Signals: {s['signals']} | Skips: {s['skips']}\n"
@@ -1306,11 +1522,18 @@ def poll_telegram(agent):
                         f"📊 WR: <b>{s['wr']*100:.2f}%</b>\n"
                         f"🎯 Win≤3: {s['win3']*100:.1f}%\n"
                         f"💰 <b>Step: {s['step']}</b>\n\n"
-                        f"Regime: {s['regime']['name']}\n"
-                        f"Entropy: {s['regime']['entropy']:.3f}\n\n"
+                        f"📌 Min Grade: {s['min_grade']}\n"
+                        f"Regime: {s['regime']['name']}\n\n"
+                        f"<b>Grade Stats:</b>\n"
+                        f"🔥 A+: {gs['A+']['wins']}/{gs['A+']['total']} "
+                        f"({gs['A+']['wr']*100:.0f}%)\n"
+                        f"⭐ A:  {gs['A']['wins']}/{gs['A']['total']} "
+                        f"({gs['A']['wr']*100:.0f}%)\n"
+                        f"✅ B:  {gs['B']['wins']}/{gs['B']['total']} "
+                        f"({gs['B']['wr']*100:.0f}%)\n\n"
                         f"<b>Win by Step:</b>\n"
                         f"S1:{wbs[0]} S2:{wbs[1]} S3:{wbs[2]}\n"
-                        f"S4+:{agent.get_win_s4_plus()}"
+                        f"S4:{wbs[3]} S5:{wbs[4]} S6:{wbs[5]}"
                     )
                 elif txt == "/patterns":
                     rows = agent.tracker.all_stats()
@@ -1324,6 +1547,33 @@ def poll_telegram(agent):
                             f"{row['wr']*100:.1f}% "
                             f"n={row['total']} "
                             f"recent={row['recent_wr']*100:.1f}%"
+                        )
+                    agent.send_telegram("\n".join(lines))
+                elif txt == "/grades":
+                    s = agent.dashboard_state()
+                    gs = s["grade_stats"]
+                    lines = ["🎓 <b>GRADE PERFORMANCE</b>"]
+                    for g in ["A+", "A", "B", "C", "D"]:
+                        st = gs[g]
+                        emoji = agent.grader.emoji(g)
+                        lines.append(
+                            f"{emoji} {g}: {st['wins']}/{st['total']} "
+                            f"({st['wr']*100:.1f}%)"
+                        )
+                    agent.send_telegram("\n".join(lines))
+                elif txt == "/regimes":
+                    s = agent.dashboard_state()
+                    rs = s["regime_stats"]
+                    if not rs:
+                        agent.send_telegram("No regime data yet.")
+                        continue
+                    lines = ["🧠 <b>REGIME PERFORMANCE</b>"]
+                    for name, st in sorted(
+                        rs.items(),
+                        key=lambda x: x[1]["wr"], reverse=True
+                    ):
+                        lines.append(
+                            f"{name}: {st['wr']*100:.1f}% (n={st['total']})"
                         )
                     agent.send_telegram("\n".join(lines))
                 elif txt == "/pause":
@@ -1340,6 +1590,8 @@ def poll_telegram(agent):
                     agent.send_telegram(
                         "🤖 <b>Commands</b>\n"
                         "/status - Full stats\n"
+                        "/grades - Grade performance\n"
+                        "/regimes - Regime performance\n"
                         "/patterns - Pattern stats\n"
                         "/pause - Pause\n"
                         "/resume - Resume\n"
@@ -1410,8 +1662,8 @@ class ResultAPIClient:
 # MAIN BOT LOOP
 # ============================================================
 def run_bot():
-    print("🚀 HYBRID V6.1 starting...", flush=True)
-    agent = HybridV61()
+    print("🚀 HYBRID V7.0 starting...", flush=True)
+    agent = HybridV7()
     api = ResultAPIClient()
 
     threading.Thread(
@@ -1446,7 +1698,7 @@ HTML = r"""
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="refresh" content="15">
-<title>HYBRID V6.1</title>
+<title>HYBRID V7.0</title>
 <style>
 body { margin:0; background:#0b1020; color:#e9f0ff; font-family:system-ui,Arial,sans-serif; padding:14px; }
 h1 { color:#00ffff; margin-bottom:6px; }
@@ -1462,8 +1714,8 @@ td,th { padding:8px; border-bottom:1px solid #2b3858; text-align:left; }
 </style>
 </head>
 <body>
-<h1>🚀 HYBRID V6.1</h1>
-<div class="small">Signal Only + Unlimited Step Tracking + Win Only Display</div>
+<h1>🚀 HYBRID V7.0</h1>
+<div class="small">Signal Only + Grade System + Step Tracking (No Cap)</div>
 
 {% if not agent %}
 <div class="card">Starting...</div>
@@ -1495,9 +1747,41 @@ td,th { padding:8px; border-bottom:1px solid #2b3858; text-align:left; }
 </div>
 
 <div class="card">
+  <h2>🎓 Grade Performance</h2>
+  <table>
+    <tr><th>Grade</th><th>Total</th><th>Wins</th><th>WR</th></tr>
+    {% set gs = agent.grade_stats() %}
+    {% for g in ["A+", "A", "B", "C", "D"] %}
+    {% set st = gs[g] %}
+    <tr>
+      <td>{{ agent.grader.emoji(g) }} {{ g }}</td>
+      <td>{{ st.total }}</td>
+      <td>{{ st.wins }}</td>
+      <td>{{ "%.1f"|format(st.wr*100) }}%</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p class="small">Min Grade to signal: <b>{{ agent.dashboard_state().min_grade }}</b></p>
+</div>
+
+<div class="card">
+  <h2>🧠 Regime Performance</h2>
+  <table>
+    <tr><th>Regime</th><th>Total</th><th>WR</th></tr>
+    {% for name, st in agent.regime_tracker.all_stats().items() %}
+    <tr>
+      <td>{{ name }}</td>
+      <td>{{ st.total }}</td>
+      <td>{{ "%.1f"|format(st.wr*100) }}%</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card">
   <h2>📊 Win by Step</h2>
   <p>S1: {{ agent.win_by_step[0] }} | S2: {{ agent.win_by_step[1] }} |
-     S3: {{ agent.win_by_step[2] }} | S4+: {{ agent.get_win_s4_plus() }}</p>
+     S3: {{ agent.win_by_step[2] }} | S4+: {{ agent.win_by_step[3] }}</p>
   <p>Win ≤3: <b class="cyan">{{ "%.1f"|format(agent.get_win3_rate()*100) }}%</b></p>
 </div>
 
@@ -1506,6 +1790,7 @@ td,th { padding:8px; border-bottom:1px solid #2b3858; text-align:left; }
   <p>Period: <b>{{ agent.last_period }}</b></p>
   <p>Result: <b>{{ agent.last_number }} → {{ agent.last_result }}</b></p>
   <p>Signal: <b class="cyan">{{ agent.last_signal }}</b></p>
+  <p>Grade: <b>{{ agent.last_grade }}</b></p>
   <p>Probability: <b>{{ "%.1f"|format(agent.last_probability*100) }}%</b></p>
   <p>Edge: <b>{{ "%.1f"|format(agent.last_edge*100) }}pp</b></p>
   <p>Reason: {{ agent.last_reason }}</p>
@@ -1554,6 +1839,18 @@ def api_patterns():
     if not global_agent:
         return jsonify([])
     return jsonify(global_agent.tracker.all_stats())
+
+@app.route("/api/grades")
+def api_grades():
+    if not global_agent:
+        return jsonify({})
+    return jsonify(global_agent.grade_stats())
+
+@app.route("/api/regimes")
+def api_regimes():
+    if not global_agent:
+        return jsonify({})
+    return jsonify(global_agent.regime_tracker.all_stats())
 
 
 # ============================================================
