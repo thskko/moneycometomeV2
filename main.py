@@ -19,7 +19,7 @@ SUPABASE_URL = "https://msgzacekhrvlqkqgjvly.supabase.co"
 SUPABASE_KEY = "sb_publishable_bVJj1lqSAsIQ1kQ8Ae2vAQ_o3yCjDeA"
 
 # ==========================================
-# 🧠 CONFIGURATION — Win Rate Optimized
+# 🧠 CONFIGURATION
 # ==========================================
 CONFIG = {
     "q_lr": 0.45,
@@ -80,8 +80,6 @@ def home():
     <p><b>Rolling Accuracy:</b> {global_agent.get_rolling_accuracy():.2%}</p>
     <p><b>Market Regime:</b> {global_agent.regime}</p>
     <p><b>Window Size:</b> {len(global_agent.window)}/{CONFIG['window_size']}</p>
-    <p><b>Model Weights:</b> {json.dumps({k: round(v, 2) for k, v in global_agent.model_weights.items()}, indent=2)}</p>
-    <p><b>LR Loss:</b> {global_agent.lr_loss:.4f}</p>
     """
 
 
@@ -236,7 +234,7 @@ class LogisticRegression:
 
 
 # ==========================================
-# 🧠 MAIN ENGINE — Win Rate Optimized
+# 🧠 MAIN ENGINE
 # ==========================================
 class AdvancedAdaptiveEngine:
     def __init__(self):
@@ -262,19 +260,16 @@ class AdvancedAdaptiveEngine:
         self.consecutive_losses = 0
         self.prediction_history = deque(maxlen=CONFIG['rolling_accuracy_window'])
 
-        # Q-Learning
         self.q_lr = CONFIG['q_lr']
         self.q_discount = CONFIG['q_discount']
         self.epsilon = CONFIG['q_epsilon']
         self.q_table = self.load_q_table()
 
-        # Logistic Regression
         self.lr_model = LogisticRegression(input_size=16, lr=CONFIG['lr_lr'])
         self.lr_train_X = deque(maxlen=200)
         self.lr_train_y = deque(maxlen=200)
         self.lr_loss = 0.0
 
-        # Model weights
         self.model_weights = {
             "Markov": 1.0, "Pattern": 1.0, "Streak": 1.0,
             "QLearning": 1.0, "Statistical": 1.0,
@@ -286,7 +281,6 @@ class AdvancedAdaptiveEngine:
             for k in self.model_weights
         }
 
-        # Risk
         self.bankroll = 1000.0
         self.current_bet = CONFIG['base_bet']
         self.kelly_bet = CONFIG['base_bet']
@@ -296,11 +290,9 @@ class AdvancedAdaptiveEngine:
         self.current_step = 1
         self.is_paused = False
 
-        # Paroli
         self.paroli_counter = 0
         self.use_paroli = False
 
-        # Trend
         self.trend_confirmations = 0
         self.last_signal_direction = None
         self.regime = "unknown"
@@ -308,38 +300,14 @@ class AdvancedAdaptiveEngine:
     def get_current_multiplier(self):
         return 2 ** max(0, self.current_step - 1)
 
-    # ---------- Supabase ----------
+    # ---------- Supabase (DISABLED — DNS error fix) ----------
     def load_q_table(self):
-        headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
-        try:
-            res = requests.get(
-                f"{SUPABASE_URL}/rest/v1/q_table?select=*",
-                headers=headers, timeout=5
-            )
-            if res.status_code == 200:
-                return {row['state']: row['actions'] for row in res.json()}
-        except Exception as e:
-            print(f"Load Q Error: {e}", flush=True)
+        """Q-Table loading disabled — in-memory only."""
         return {}
 
     def save_q_table(self, state, actions):
-        def _save():
-            headers = {
-                "apikey": SUPABASE_KEY,
-                "Authorization": f"Bearer {SUPABASE_KEY}",
-                "Content-Type": "application/json",
-                "Prefer": "resolution=merge-duplicates"
-            }
-            try:
-                requests.post(
-                    f"{SUPABASE_URL}/rest/v1/q_table",
-                    headers=headers,
-                    json={"state": state, "actions": actions},
-                    timeout=5
-                )
-            except Exception as e:
-                print(f"Save Q Error: {e}", flush=True)
-        threading.Thread(target=_save, daemon=True).start()
+        """Q-Table saving disabled — in-memory only."""
+        pass
 
     # ---------- Telegram ----------
     def send_telegram(self, message):
@@ -380,7 +348,6 @@ class AdvancedAdaptiveEngine:
             reward + self.q_discount * max(self.q_table[state].values()) - old_q
         )
         self.q_table[state][action] = new_q
-        self.save_q_table(state, self.q_table[state])
 
     def update_epsilon(self):
         self.epsilon = max(CONFIG['q_min_epsilon'], self.epsilon * CONFIG['q_epsilon_decay'])
@@ -682,15 +649,54 @@ class AdvancedAdaptiveEngine:
         return self.current_bet * (2 ** max(0, self.current_step - 1))
 
     # ==========================================
-    # 🎯 MAIN LOGIC
+    # 🎯 MAIN LOGIC — WITH TYPE FIX
     # ==========================================
     def process_api_result(self, api_period, api_result):
         with self.lock:
             self._process_api_result_internal(api_period, api_result)
 
     def _process_api_result_internal(self, api_period, api_result):
+        """Internal method — with TYPE SAFETY FIX."""
+        
+        # ==========================================
+        # ✅ FIX: Force correct types
+        # ==========================================
+        try:
+            self.current_step = int(self.current_step)
+        except (ValueError, TypeError):
+            self.current_step = 1
+        
+        try:
+            self.bankroll = float(self.bankroll)
+        except (ValueError, TypeError):
+            self.bankroll = 1000.0
+        
+        try:
+            self.current_bet = float(self.current_bet)
+        except (ValueError, TypeError):
+            self.current_bet = CONFIG['base_bet']
+        
+        try:
+            self.peak_bankroll = float(self.peak_bankroll)
+        except (ValueError, TypeError):
+            self.peak_bankroll = 1000.0
+        
+        try:
+            self.total_signals = int(self.total_signals)
+            self.total_wins = int(self.total_wins)
+            self.total_losses = int(self.total_losses)
+        except (ValueError, TypeError):
+            pass
+        
+        # ==========================================
+        # Period conversion
+        # ==========================================
         self.last_api_period = str(api_period)
-        api_period_int = int(api_period)
+        try:
+            api_period_int = int(api_period)
+        except (ValueError, TypeError):
+            print(f"Invalid period: {api_period}", flush=True)
+            return
 
         if self.is_paused:
             return
@@ -926,9 +932,7 @@ def poll_telegram(agent):
                             f"✅ Wins: {agent.total_wins} | ❌ Losses: {agent.total_losses}\n"
                             f"🎯 Win Rate: {wr:.2f}%\n"
                             f"💰 Step: {agent.current_step}x\n"
-                            f"💵 Bankroll: {agent.bankroll:.2f}\n"
-                            f"📉 Max DD: {agent.max_drawdown:.1%}\n"
-                            f"🏛️ Regime: {agent.regime}"
+                            f"💵 Bankroll: {agent.bankroll:.2f}"
                         )
                     elif text == "/pause":
                         with agent.lock:
@@ -972,7 +976,7 @@ def poll_telegram(agent):
 # 🤖 MAIN LOOP
 # ==========================================
 def run_bot():
-    print("🤖 Bot Started (Win Rate Optimized)", flush=True)
+    print("🤖 Bot Started (Type Error Fixed)", flush=True)
     agent = AdvancedAdaptiveEngine()
 
     threading.Thread(target=poll_telegram, args=(agent,), daemon=True).start()
