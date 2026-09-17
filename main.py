@@ -62,13 +62,11 @@ def home():
     global global_agent
     if not global_agent:
         return "<h3>🤖 Bot is starting...</h3>"
-
     try:
         total = int(global_agent.total_wins) + int(global_agent.total_losses)
         wr = (int(global_agent.total_wins) / total * 100) if total > 0 else 0.0
     except:
         wr = 0.0
-
     return f"""
     <h2>📊 WINGO BOT REPORT</h2>
     <p><b>Status:</b> {'PAUSED 🛑' if global_agent.is_paused else 'RUNNING 🟢'}</p>
@@ -302,71 +300,90 @@ class AdvancedAdaptiveEngine:
             self.current_step = int(self.current_step)
         except (ValueError, TypeError):
             self.current_step = 1
-
         try:
             self.bankroll = float(self.bankroll)
         except (ValueError, TypeError):
             self.bankroll = 1000.0
-
         try:
             self.peak_bankroll = float(self.peak_bankroll)
         except (ValueError, TypeError):
             self.peak_bankroll = 1000.0
-
         try:
             self.current_bet = float(self.current_bet)
         except (ValueError, TypeError):
             self.current_bet = float(CONFIG['base_bet'])
-
         try:
             self.kelly_bet = float(self.kelly_bet)
         except (ValueError, TypeError):
             self.kelly_bet = float(CONFIG['base_bet'])
-
         try:
             self.total_profit = float(self.total_profit)
         except (ValueError, TypeError):
             self.total_profit = 0.0
-
         try:
             self.max_drawdown = float(self.max_drawdown)
         except (ValueError, TypeError):
             self.max_drawdown = 0.0
-
         try:
             self.total_signals = int(self.total_signals)
         except (ValueError, TypeError):
             self.total_signals = 0
-
         try:
             self.total_wins = int(self.total_wins)
         except (ValueError, TypeError):
             self.total_wins = 0
-
         try:
             self.total_losses = int(self.total_losses)
         except (ValueError, TypeError):
             self.total_losses = 0
-
         try:
             self.consecutive_wins = int(self.consecutive_wins)
         except (ValueError, TypeError):
             self.consecutive_wins = 0
-
         try:
             self.consecutive_losses = int(self.consecutive_losses)
         except (ValueError, TypeError):
             self.consecutive_losses = 0
-
         try:
             self.paroli_counter = int(self.paroli_counter)
         except (ValueError, TypeError):
             self.paroli_counter = 0
-
         try:
             self.trend_confirmations = int(self.trend_confirmations)
         except (ValueError, TypeError):
             self.trend_confirmations = 0
+
+    def _debug_print_types(self):
+        """DEBUG: Print all types."""
+        try:
+            print("=" * 60, flush=True)
+            print("DEBUG TYPES:", flush=True)
+            print(f"  current_step: {self.current_step} ({type(self.current_step).__name__})", flush=True)
+            print(f"  bankroll: {self.bankroll} ({type(self.bankroll).__name__})", flush=True)
+            print(f"  peak_bankroll: {self.peak_bankroll} ({type(self.peak_bankroll).__name__})", flush=True)
+            print(f"  current_bet: {self.current_bet} ({type(self.current_bet).__name__})", flush=True)
+            print(f"  kelly_bet: {self.kelly_bet} ({type(self.kelly_bet).__name__})", flush=True)
+            print(f"  total_profit: {self.total_profit} ({type(self.total_profit).__name__})", flush=True)
+            print(f"  max_drawdown: {self.max_drawdown} ({type(self.max_drawdown).__name__})", flush=True)
+            print(f"  total_signals: {self.total_signals} ({type(self.total_signals).__name__})", flush=True)
+            print(f"  total_wins: {self.total_wins} ({type(self.total_wins).__name__})", flush=True)
+            print(f"  total_losses: {self.total_losses} ({type(self.total_losses).__name__})", flush=True)
+            print(f"  consecutive_wins: {self.consecutive_wins} ({type(self.consecutive_wins).__name__})", flush=True)
+            print(f"  consecutive_losses: {self.consecutive_losses} ({type(self.consecutive_losses).__name__})", flush=True)
+            print(f"  paroli_counter: {self.paroli_counter} ({type(self.paroli_counter).__name__})", flush=True)
+            print(f"  trend_confirmations: {self.trend_confirmations} ({type(self.trend_confirmations).__name__})", flush=True)
+            print(f"  is_paused: {self.is_paused} ({type(self.is_paused).__name__})", flush=True)
+            print(f"  use_paroli: {self.use_paroli} ({type(self.use_paroli).__name__})", flush=True)
+            print(f"  last_api_period: {self.last_api_period} ({type(self.last_api_period).__name__})", flush=True)
+            print(f"  next_signal_period: {self.next_signal_period} ({type(self.next_signal_period).__name__})", flush=True)
+            print(f"  active_prediction: {self.active_prediction} ({type(self.active_prediction).__name__})", flush=True)
+            print(f"  last_state: {self.last_state} ({type(self.last_state).__name__})", flush=True)
+            print(f"  regime: {self.regime} ({type(self.regime).__name__})", flush=True)
+            print(f"  prediction_history: {list(self.prediction_history)}", flush=True)
+            print(f"  prediction_history types: {[type(x).__name__ for x in self.prediction_history]}", flush=True)
+            print("=" * 60, flush=True)
+        except Exception as e:
+            print(f"DEBUG print error: {e}", flush=True)
 
     def get_current_multiplier(self):
         self._force_types()
@@ -586,7 +603,6 @@ class AdvancedAdaptiveEngine:
     def get_consensus(self, window_list, state_key=None):
         if state_key is None:
             state_key = self.get_state_key()
-
         m1 = self.markov_predict(window_list)
         m2 = self.pattern_predict(window_list)
         m3 = self.streak_predict(window_list)
@@ -595,10 +611,8 @@ class AdvancedAdaptiveEngine:
         m6 = self.mean_reversion_predict(window_list)
         m7 = self.momentum_predict(window_list)
         m8 = self.regime_aware_predict(window_list)
-
         features, _ = FeatureEngineer.extract(window_list)
         lr_pred, lr_conf = self.lr_predict(features)
-
         predictions = {
             "Markov": m1, "Pattern": m2, "Streak": m3,
             "QLearning": m4, "Statistical": m5,
@@ -606,49 +620,37 @@ class AdvancedAdaptiveEngine:
             "RegimeAware": m8, "LogisticReg": lr_pred
         }
         self.last_predictions_by_model = predictions
-
         scores = {"Big": 0.0, "Small": 0.0}
         for name, pred in predictions.items():
             scores[pred] += self.model_weights.get(name, 1.0)
-
         if lr_pred == "Big":
             scores["Big"] += lr_conf * 2.0
         else:
             scores["Small"] += (1 - lr_conf) * 2.0
-
         total_w = sum(self.model_weights.values()) + 2.0
         confidence = max(scores["Big"], scores["Small"]) / total_w
-
         predicted = "Big" if scores["Big"] >= scores["Small"] else "Small"
         agreement_count = sum(1 for pred in predictions.values() if pred == predicted)
-
         if agreement_count < CONFIG['min_agreement']:
             return predicted, f"⏳ Wait ({agreement_count}/9)", confidence
-
         regime, regime_strength = self.detect_market_regime(window_list)
         self.regime = regime
-
         if regime == "trending":
             if predicted != window_list[-1]:
                 confidence *= 0.7
         elif regime == "choppy":
             if predicted == window_list[-1]:
                 confidence *= 0.7
-
         self.last_confidence = confidence
-
         is_choppy, flip = self.check_volatility(window_list)
         note = f" | {regime.capitalize()}"
-
         if self.last_signal_direction == predicted:
             self.trend_confirmations += 1
         else:
             self.trend_confirmations = 1
             self.last_signal_direction = predicted
-
         if is_choppy and self.trend_confirmations < CONFIG['trend_confirmation']:
             return predicted, f"⏳ Wait ({self.trend_confirmations}/{CONFIG['trend_confirmation']}){note}", confidence
-
         return predicted, f"🎯 Big={scores['Big']:.1f}/Small={scores['Small']:.1f} | {agreement_count}/9 | {regime}{note}", confidence
 
     def get_rolling_accuracy(self):
@@ -666,7 +668,6 @@ class AdvancedAdaptiveEngine:
         self._force_types()
         multiplier = 2 ** max(0, self.current_step - 1)
         multiplier = float(multiplier)
-
         if won:
             profit = float(self.current_bet) * multiplier * 0.9
             self.bankroll = float(self.bankroll) + float(profit)
@@ -678,22 +679,17 @@ class AdvancedAdaptiveEngine:
             self.bankroll = float(self.bankroll) - float(loss)
             self.consecutive_losses = int(self.consecutive_losses) + 1
             self.consecutive_wins = 0
-
         if float(self.bankroll) > float(self.peak_bankroll):
             self.peak_bankroll = float(self.bankroll)
-
         dd = (float(self.peak_bankroll) - float(self.bankroll)) / max(float(self.peak_bankroll), 1.0)
         self.max_drawdown = max(float(self.max_drawdown), float(dd))
-
         if float(dd) >= float(CONFIG['stop_loss_pct']):
             self.is_paused = True
-
         if int(self.consecutive_wins) >= int(CONFIG['anti_martingale_after_win']):
             self.use_paroli = True
             self.paroli_counter = int(self.consecutive_wins)
         else:
             self.use_paroli = False
-
         if CONFIG['use_kelly'] and self.prediction_history:
             wr = sum(self.prediction_history) / len(self.prediction_history)
             if wr > 0.5:
@@ -715,11 +711,28 @@ class AdvancedAdaptiveEngine:
             self._process_api_result_internal(api_period, api_result)
 
     def _process_api_result_internal(self, api_period, api_result):
-        """Internal method — with FORCE TYPE fix."""
+        """Internal method — with DEBUG and FORCE TYPE."""
+        # ==========================================
+        # DEBUG: Print ALL types BEFORE fix
+        # ==========================================
+        print(f"DEBUG BEFORE FIX: current_step={self.current_step} ({type(self.current_step).__name__})", flush=True)
+        print(f"DEBUG BEFORE FIX: bankroll={self.bankroll} ({type(self.bankroll).__name__})", flush=True)
+        print(f"DEBUG BEFORE FIX: peak_bankroll={self.peak_bankroll} ({type(self.peak_bankroll).__name__})", flush=True)
+        print(f"DEBUG BEFORE FIX: current_bet={self.current_bet} ({type(self.current_bet).__name__})", flush=True)
+        print(f"DEBUG BEFORE FIX: consecutive_wins={self.consecutive_wins} ({type(self.consecutive_wins).__name__})", flush=True)
+        print(f"DEBUG BEFORE FIX: consecutive_losses={self.consecutive_losses} ({type(self.consecutive_losses).__name__})", flush=True)
+        print(f"DEBUG BEFORE FIX: total_signals={self.total_signals} ({type(self.total_signals).__name__})", flush=True)
+        print(f"DEBUG BEFORE FIX: paroli_counter={self.paroli_counter} ({type(self.paroli_counter).__name__})", flush=True)
+        print(f"DEBUG BEFORE FIX: trend_confirmations={self.trend_confirmations} ({type(self.trend_confirmations).__name__})", flush=True)
+        print(f"DEBUG BEFORE FIX: prediction_history={list(self.prediction_history)}", flush=True)
+
         # ==========================================
         # FORCE ALL TYPES
         # ==========================================
         self._force_types()
+
+        # DEBUG: Print AFTER fix
+        print(f"DEBUG AFTER FIX: current_step={self.current_step} ({type(self.current_step).__name__})", flush=True)
 
         # Period conversion
         self.last_api_period = str(api_period)
@@ -738,9 +751,7 @@ class AdvancedAdaptiveEngine:
         if self.active_prediction is not None and self.last_state is not None:
             predicted = self.active_prediction
             is_correct = (predicted.lower() == api_result.lower())
-
             self.prediction_history.append(1 if is_correct else 0)
-
             if int(self.current_step) == 1:
                 reward = 5.0 if is_correct else -5.0
             elif is_correct:
@@ -748,15 +759,11 @@ class AdvancedAdaptiveEngine:
             else:
                 reward = -4.5 - (float(self.current_step) * 0.5)
             self.update_q_table(self.last_state, predicted, reward)
-
             self.update_model_weights(api_result)
-
             if self.last_feature_vector is not None:
                 self.lr_train_X.append(self.last_feature_vector)
                 self.lr_train_y.append([FeatureEngineer.encode(api_result)])
-
             self.update_bankroll(is_correct)
-
             if is_correct:
                 self.total_wins = int(self.total_wins) + 1
                 self.current_step = 1
@@ -766,17 +773,14 @@ class AdvancedAdaptiveEngine:
             else:
                 self.total_losses = int(self.total_losses) + 1
                 self.current_step = int(self.current_step) + 1
-
             if is_correct:
                 notifications.append("🔥🔥🔥 WIN 🔥🔥🔥")
-
             self.active_prediction = None
             self.last_state = None
             self.update_epsilon()
 
         # Step 2: Window ထဲ api_result ထည့်
         self.window.append(api_result)
-
         if len(self.window) > 0:
             features, _ = FeatureEngineer.extract(list(self.window))
             self.last_feature_vector = FeatureEngineer.to_vector(features)
@@ -784,7 +788,6 @@ class AdvancedAdaptiveEngine:
         # Step 3: Next Round အတွက် Signal
         next_period = str(api_period_int + 1)
         self.next_signal_period = next_period
-
         if len(self.window) < CONFIG['min_data_before_signal']:
             notifications.append(
                 f"💖Period {next_period}\n"
@@ -797,7 +800,6 @@ class AdvancedAdaptiveEngine:
             )
         else:
             prediction, regime, confidence = self.get_consensus(list(self.window))
-
             if confidence < CONFIG['min_confidence_for_trade']:
                 notifications.append(
                     f"💖Period {next_period}\n"
@@ -808,7 +810,6 @@ class AdvancedAdaptiveEngine:
                 self.last_state = self.get_state_key()
                 self.active_prediction = prediction
                 self.total_signals = int(self.total_signals) + 1
-
                 notifications.append(
                     f"💖Period {next_period}\n"
                     f"🎯 SIGNAL → {prediction.capitalize()}\n"
@@ -816,20 +817,17 @@ class AdvancedAdaptiveEngine:
                     f"💰 Step {int(self.current_step)}x\n"
                     f"📈 Win Rate: {self.get_rolling_accuracy():.0%}"
                 )
-
         for msg in notifications:
             self.send_telegram(msg)
 
     def run_backtest(self, historical_results):
         if len(historical_results) < CONFIG['window_size'] + 20:
             return {"win_rate": 0, "total": 0, "wins": 0, "losses": 0}
-
         with self.lock:
             saved_lock = self.lock
             del self.__dict__['lock']
             saved_engine = copy.deepcopy(self)
             self.lock = saved_lock
-
             self.window = deque(maxlen=CONFIG['window_size'])
             self.q_table = {}
             self.epsilon = 0.0
@@ -838,10 +836,7 @@ class AdvancedAdaptiveEngine:
             self.lr_train_y = deque(maxlen=200)
             self.lr_loss = 0.0
             self.model_weights = {k: 1.0 for k in self.model_weights}
-            self.model_accuracy = {
-                k: deque(maxlen=CONFIG['rolling_accuracy_window'])
-                for k in self.model_weights
-            }
+            self.model_accuracy = {k: deque(maxlen=CONFIG['rolling_accuracy_window']) for k in self.model_weights}
             self.active_prediction = None
             self.last_state = None
             self.last_predictions_by_model = {}
@@ -866,47 +861,35 @@ class AdvancedAdaptiveEngine:
             self.paroli_counter = 0
             self.last_confidence = None
             self.regime = "unknown"
-
             wins = 0
             total = 0
-
             for i in range(len(historical_results) - 1):
                 self.window.append(historical_results[i])
-
                 if len(self.window) < CONFIG['window_size']:
                     continue
-
                 state_key = self.get_state_key(self.window)
                 pred, _, conf = self.get_consensus(list(self.window), state_key=state_key)
-
                 actual = historical_results[i + 1]
                 is_correct = (pred == actual)
-
                 reward = 5.0 if is_correct else -5.0
                 if state_key not in self.q_table:
                     self.q_table[state_key] = {"Big": 0.5, "Small": 0.5}
                 old_q = self.q_table[state_key][pred]
                 max_next_q = max(self.q_table[state_key].values())
-                new_q = old_q + self.q_lr * (
-                    reward + self.q_discount * max_next_q - old_q
-                )
+                new_q = old_q + self.q_lr * (reward + self.q_discount * max_next_q - old_q)
                 self.q_table[state_key][pred] = new_q
-
                 if len(self.window) >= 5:
                     features, _ = FeatureEngineer.extract(list(self.window))
                     vec = FeatureEngineer.to_vector(features)
                     self.lr_train_X.append(vec)
                     self.lr_train_y.append([FeatureEngineer.encode(actual)])
-
                 if conf >= CONFIG['min_confidence_for_trade']:
                     if is_correct:
                         wins += 1
                     total += 1
-
             del self.__dict__['lock']
             self.__dict__.update(saved_engine.__dict__)
             self.lock = saved_lock
-
         return {
             "win_rate": wins / total if total > 0 else 0,
             "total": total,
@@ -926,7 +909,6 @@ def poll_telegram(agent):
         )
     except:
         pass
-
     offset = 0
     while True:
         try:
@@ -938,10 +920,8 @@ def poll_telegram(agent):
                     msg = upd.get("message", {}) or upd.get("edited_message", {})
                     chat = str(msg.get("chat", {}).get("id", ""))
                     text = msg.get("text", "").strip().lower()
-
                     if chat != CHAT_ID:
                         continue
-
                     if text == "/status":
                         total = agent.total_wins + agent.total_losses
                         wr = (agent.total_wins / total * 100) if total > 0 else 0
@@ -998,15 +978,12 @@ def poll_telegram(agent):
 # 🤖 MAIN LOOP
 # ==========================================
 def run_bot():
-    print("🤖 Bot Started (Force Type Fix)", flush=True)
+    print("🤖 Bot Started (Debug + Force Type)", flush=True)
     agent = AdvancedAdaptiveEngine()
-
     threading.Thread(target=poll_telegram, args=(agent,), daemon=True).start()
-
     last_processed_period = None
     url = CONFIG['api_url']
-    auth = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOiIxNzg3OTgxNTA5IiwibmJmIjoiMTc4Nzk4MTUwOSIsImV4cCI6IjE3ODc5ODMzMDkiLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL2V4cGlyYXRpb24iOiI4LzI5LzIwMjYgMTI6MzE2NDkgUE0iLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL3JvbGUiOiJBY2Nlc3NfVG9rZW4iLCJVc2VySWQiOiIxMDEyMjEzIiwiVXNlck5hbWUiOiI5NTk3NDA5MzkzNzAiLCJVc2VyUGhvdG8iOiI5IiwiTmlja05hbWUiOiJUaG V0R3lpIiwiQW1vdW50IjoiODcuMzAiLCJJbnRlZ3JhbCI6IjAiLCJMb2dpbk1hcmsiOiJINSIsImxvZ2luVGltZSI6IjgvMjkvMjAyNiAxMjowMTo0OSBQTSIsImxvZ2luSVBBZGRyZXNzIjoiNDUuNDEuMTA0LjI0MCIsImRiTnVtYmVyIjoiMCIsIklzdmFsaWRhdG9yIjoiMCIsIktleUNvZGUiOiIzMjMzMiIsImRva2VuVHlwZSI6IjJBY2Nlc3NfVG9rZW4iLCJob25lVHlpZSI6IjAiLCJVc2VyVHlpZSI6IjAiLCJVc2VyTmFtZ2UiOiIuIiwiaXNzIjoiand0SXNzdWVyIiwiYXVkIjoibG90dGVyeVRpY2tldCJ9.ZL0Y9gexUTCsKwWeZhCLAAw8AABEYJt0GnIzIviMG4g"
-
+    auth = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOiIxNzg3OTgxNTA5IiwibmJmIjoiMTc4Nzk4MTUwOSIsImV4cCI6IjE3ODc5ODMzMDkiLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL2V4cGlyYXRpb24iOiI4LzI5LzIwMjYgMTI6MzE2NDkgUE0iLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL3JvbGUiOiJBY2Nlc3NfVG9rZW4iLCJVc2VySWQiOiIxMDEyMjEzIiwiVXNlck5hbWUiOiI5NTk3NDA5MzkzNzAiLCJVc2VyUGhvdG8iOiI5IiwiTmlja05hbWUiOiJUaGV0R3lpIiwiQW1vdW50IjoiODcuMzAiLCJJbnRlZ3JhbCI6IjAiLCJMb2dpbk1hcmsiOiJINSIsImxvZ2luVGltZSI6IjgvMjkvMjAyNiAxMjowMTo0OSBQTSIsImxvZ2luSVBBZGRyZXNzIjoiNDUuNDEuMTA0LjI0MCIsImRiTnVtYmVyIjoiMCIsIklzdmFsaWRhdG9yIjoiMCIsIktleUNvZGUiOiIzMjMzMiIsImRva2VuVHlwZSI6IjJBY2Nlc3NfVG9rZW4iLCJob25lVHlpZSI6IjAiLCJVc2VyVHlpZSI6IjAiLCJVc2VyTmFtZ2UiOiIuIiwiaXNzIjoiand0SXNzdWVyIiwiYXVkIjoibG90dGVyeVRpY2tldCJ9.ZL0Y9gexUTCsKwWeZhCLAAw8AABEYJt0GnIzIviMG4g"
     headers = {
         "accept": "application/json, text/plain, */*",
         "authorization": f"Bearer {auth}",
@@ -1015,7 +992,6 @@ def run_bot():
         "referer": "https://6win598.com/",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
-
     while True:
         try:
             payload = {
@@ -1027,45 +1003,34 @@ def run_bot():
                 "signature": "55F4FD150F15F090B943374F3C9BE78B",
                 "timestamp": int(time.time())
             }
-
             res = requests.post(url, headers=headers, json=payload, timeout=5)
             if res.status_code != 200:
                 print(f"API Error: {res.status_code}", flush=True)
                 time.sleep(2)
                 continue
-
             data = res.json()
             list_data = data.get("data", {}).get("list", [])
-
             if len(list_data) == 0:
                 time.sleep(2)
                 continue
-
             latest = list_data[0]
             raw_period = latest.get("issueNumber")
             number = latest.get("number")
-
             if raw_period is None or number is None:
                 time.sleep(2)
                 continue
-
             raw_period = str(raw_period)
             number = int(number)
             api_result = "Big" if number >= 5 else "Small"
-
             if raw_period != last_processed_period:
                 last_processed_period = raw_period
                 print(f"📥 API: Period {raw_period} → {api_result}", flush=True)
                 agent.process_api_result(raw_period, api_result)
-
         except Exception as e:
             print(f"Main Loop Error: {e}", flush=True)
-
         time.sleep(2)
 
-
 threading.Thread(target=run_bot, daemon=True).start()
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
