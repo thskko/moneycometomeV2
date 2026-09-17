@@ -1,1120 +1,977 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-HYBRID ENGINE V8.7
-Big/Small sequence prediction engine.
-
-- Env-based config (no hard-coded secrets)
-- Lowercase headers (V7-compatible)
-- Multi-structure API extract
-- Raw debug via /api/debug
+HYBRID V8.2 — High Frequency & High Precision Engine
+- Multi-Dimension Signals: Big/Small & Odd/Even dual engine.
+- Dynamic Regime Switching: Adapts weights based on market regimes instead of hard-blocking.
+- Family Consensus (Voting): Statistical, Memory, and Streak families vote; 2/3 agreement passes signals.
+- Independent Step Handling: Constant grade requirements across all steps (No high-step lockout).
+- Anti-Trap Engine: Detects extended chop/alternating traps.
+- SQLite Database + Telegram Bot + Flask Realtime Dashboard.
 """
 
 import os
-import sys
 import time
 import math
 import json
 import sqlite3
 import threading
-import traceback
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from datetime import datetime, timezone
-
 import requests
 from flask import Flask, jsonify, render_template_string
 
-
 # ============================================================
-# CONFIG
+# CONFIGURATION
 # ============================================================
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+CHAT_ID = os.getenv("CHAT_ID", "")
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
-CHAT_ID = os.getenv("CHAT_ID", "").strip()
-
-API_URL = os.getenv(
-    "RESULT_API_URL",
-    "https://6lotteryapi.com/api/webapi/GetNoaverageEmerdList"
-)
-API_AUTH = os.getenv("RESULT_API_AUTH", "").strip()
+API_URL = os.getenv("RESULT_API_URL", "https://6lotteryapi.com/api/webapi/GetNoaverageEmerdList")
+API_AUTH = os.getenv("RESULT_API_AUTH", "")
 API_ORIGIN = os.getenv("API_ORIGIN", "https://6win598.com")
 API_REFERER = os.getenv("API_REFERER", "https://6win598.com/")
-API_RANDOM = os.getenv("API_RANDOM", "").strip()
-API_SIGNATURE = os.getenv("API_SIGNATURE", "").strip()
+API_RANDOM = os.getenv("API_RANDOM", "")
+API_SIGNATURE = os.getenv("API_SIGNATURE", "")
 
 API_TYPE_ID = int(os.getenv("API_TYPE_ID", "30"))
 API_LANGUAGE = int(os.getenv("API_LANGUAGE", "7"))
-API_PAGE_SIZE = int(os.getenv("API_PAGE_SIZE", "20"))
 PERIOD_OFFSET = int(os.getenv("PERIOD_OFFSET", "2"))
-
-POLL_SECONDS = float(os.getenv("POLL_SECONDS", "2"))
+POLL_SECONDS = float(os.getenv("POLL_SECONDS", "2.0"))
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "10"))
 
-DB_PATH = os.getenv("DB_PATH", "hybrid_v87.db")
-
-MIN_HISTORY = int(os.getenv("MIN_HISTORY", "35"))
+DB_PATH = os.getenv("DB_PATH", "hybrid_v8.db")
+MIN_HISTORY = int(os.getenv("MIN_HISTORY", "30"))
 MAX_HISTORY = int(os.getenv("MAX_HISTORY", "1000"))
 
-MIN_LIVE_CONF = float(os.getenv("MIN_LIVE_CONF", "0.58"))
-REJECT_CONF = float(os.getenv("REJECT_CONF", "0.54"))
-MIN_EDGE = float(os.getenv("MIN_EDGE", "0.08"))
-MAX_DISAGREEMENT = float(os.getenv("MAX_DISAGREEMENT", "0.40"))
+MIN_SIGNAL_PROB = float(os.getenv("MIN_SIGNAL_PROB", "0.57"))
+MIN_EDGE = float(os.getenv("MIN_EDGE", "0.07"))
+MAX_MODEL_DISAGREEMENT = float(os.getenv("MAX_MODEL_DISAGREEMENT", "0.38"))
+MIN_Z_SCORE = float(os.getenv("MIN_Z_SCORE", "1.645"))  # 90% Statistical confidence
 
-PRIOR_N = float(os.getenv("PRIOR_N", "30"))
-CONTEXT_PRIOR_N = float(os.getenv("CONTEXT_PRIOR_N", "25"))
-
-LEARNING_RATE = float(os.getenv("LEARNING_RATE", "0.03"))
-L2_PENALTY = float(os.getenv("L2_PENALTY", "0.01"))
-
-CORR_WINDOW = int(os.getenv("CORR_WINDOW", "50"))
-MIN_CORR_N = int(os.getenv("MIN_CORR_N", "20"))
-
-SHADOW_MIN_AGREEMENT = float(os.getenv("SHADOW_MIN_AGREEMENT", "0.60"))
-SHADOW_MIN_PROB = float(os.getenv("SHADOW_MIN_PROB", "0.56"))
-
-ALLOW_TELEGRAM_COMMANDS = os.getenv("ALLOW_TELEGRAM_COMMANDS", "1") == "1"
-
+CALIBRATION_MIN_SAMPLES = int(os.getenv("CALIBRATION_MIN_SAMPLES", "12"))
 PORT = int(os.getenv("PORT", "8080"))
 
-VALID_RESULTS = ("Big", "Small")
+# Grade Thresholds (Allows Grade B, A, A+ consistently across all steps)
+GRADE_A_PLUS = float(os.getenv("GRADE_A_PLUS", "0.76"))
+GRADE_A      = float(os.getenv("GRADE_A",      "0.64"))
+GRADE_B      = float(os.getenv("GRADE_B",      "0.53"))
+MIN_GRADE    = os.getenv("MIN_GRADE", "B")  # B, A, A+ all eligible
 
 app = Flask(__name__)
 global_agent = None
 
 
 # ============================================================
-# HELPERS
+# HELPER FUNCTIONS
 # ============================================================
+def number_to_result(number):
+    try:
+        n = int(number)
+    except (TypeError, ValueError):
+        return None
+    if 0 <= n <= 4:
+        return "Small"
+    if 5 <= n <= 9:
+        return "Big"
+    return None
 
-def log(msg):
-    print(msg, flush=True)
+def number_to_odd_even(number):
+    try:
+        n = int(number)
+    except (TypeError, ValueError):
+        return None
+    return "Even" if n % 2 == 0 else "Odd"
 
-
-def clamp(x, lo, hi):
-    return max(lo, min(hi, x))
-
+def clamp(value, lo, hi):
+    return max(lo, min(hi, value))
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
-
-def sigmoid(x):
-    x = clamp(float(x), -20, 20)
-    return 1.0 / (1.0 + math.exp(-x))
-
-
-def safe_logit(p):
-    p = clamp(float(p), 0.02, 0.98)
-    return math.log(p / (1.0 - p))
-
-
-def beta_mean(wins, total, prior_mean=0.50, prior_n=30):
-    return (wins + prior_mean * prior_n) / max(1.0, total + prior_n)
-
-
-def entropy_binary(p):
-    p = clamp(p, 1e-9, 1 - 1e-9)
-    return -(p * math.log2(p) + (1 - p) * math.log2(1 - p))
-
-
-def acf(arr, lag):
-    if len(arr) <= lag:
+def calculate_z_score(successes, trials, p=0.5):
+    if trials <= 0:
         return 0.0
-    x = [1.0 if v == "Big" else -1.0 for v in arr]
-    mean = sum(x) / len(x)
-    denom = sum((v - mean) ** 2 for v in x)
-    if denom <= 1e-12:
+    expected = trials * p
+    std_dev = math.sqrt(trials * p * (1.0 - p))
+    if std_dev == 0:
         return 0.0
-    cov = sum((x[i] - mean) * (x[i - lag] - mean) for i in range(lag, len(x)))
-    return clamp(cov / denom, -1, 1)
+    return (successes - expected) / std_dev
 
-
-def streak_length(arr):
+def entropy_binary(arr, val1):
     if not arr:
-        return 0
+        return 0.0
+    c = sum(1 for x in arr if x == val1)
+    p = c / len(arr)
+    q = 1.0 - p
+    h = 0.0
+    if p > 0: h -= p * math.log2(p)
+    if q > 0: h -= q * math.log2(q)
+    return clamp(h, 0.0, 1.0)
+
+def transition_rate(arr):
+    if len(arr) < 2:
+        return 0.0
+    return sum(arr[i] != arr[i - 1] for i in range(1, len(arr))) / (len(arr) - 1)
+
+def current_streak(arr):
+    if not arr:
+        return 0, None
     last = arr[-1]
-    n = 0
+    count = 0
     for x in reversed(arr):
         if x != last:
             break
-        n += 1
-    return n
-
-
-def streak_bucket(n):
-    if n <= 1: return "1"
-    if n == 2: return "2"
-    if n == 3: return "3"
-    return "4+"
-
-
-def result_value(result):
-    return 1.0 if result == "Big" else 0.0
+        count += 1
+    return count, last
 
 
 # ============================================================
-# DATABASE
+# DATABASE ENGINE
 # ============================================================
-
-class Database:
+class DataEngine:
     def __init__(self, path=DB_PATH):
         self.path = path
-        self.conn = sqlite3.connect(path, check_same_thread=False, timeout=30)
-        self.lock = threading.RLock()
-        self.init_db()
+        self.conn = sqlite3.connect(self.path, check_same_thread=False)
+        self.lock = threading.Lock()
+        self._init_db()
 
-    def init_db(self):
+    def _init_db(self):
         with self.lock:
-            c = self.conn.cursor()
-            c.execute("""CREATE TABLE IF NOT EXISTS history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                period TEXT UNIQUE NOT NULL,
-                number INTEGER NOT NULL,
-                result TEXT NOT NULL,
-                timestamp TEXT NOT NULL
-            )""")
-            c.execute("""CREATE TABLE IF NOT EXISTS predictions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at TEXT NOT NULL,
-                source_period TEXT, target_period TEXT,
-                prediction TEXT,
-                raw_probability REAL, calibrated_probability REAL,
-                confidence REAL, state TEXT,
-                regime TEXT, regime_age INTEGER, transition INTEGER,
-                entropy REAL, disagreement REAL,
-                model_json TEXT, group_json TEXT, feature_json TEXT,
-                evaluated INTEGER DEFAULT 0, actual TEXT, correct INTEGER
-            )""")
-            c.execute("""CREATE TABLE IF NOT EXISTS model_stats (
-                model TEXT PRIMARY KEY,
-                total INTEGER DEFAULT 0, wins INTEGER DEFAULT 0,
-                errors_json TEXT, state TEXT DEFAULT 'NEW'
-            )""")
-            c.execute("""CREATE TABLE IF NOT EXISTS context_stats (
-                context TEXT PRIMARY KEY,
-                total INTEGER DEFAULT 0, wins INTEGER DEFAULT 0
-            )""")
-            c.execute("""CREATE TABLE IF NOT EXISTS group_stats (
-                group_name TEXT PRIMARY KEY,
-                total INTEGER DEFAULT 0, wins INTEGER DEFAULT 0
-            )""")
-            c.execute("""CREATE TABLE IF NOT EXISTS calibration (
-                bucket TEXT PRIMARY KEY,
-                total INTEGER DEFAULT 0, wins INTEGER DEFAULT 0
-            )""")
-            c.execute("""CREATE TABLE IF NOT EXISTS meta_state (
-                key TEXT PRIMARY KEY, value TEXT NOT NULL
-            )""")
-            c.execute("""CREATE TABLE IF NOT EXISTS loss_analysis (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at TEXT NOT NULL, source_period TEXT,
-                prediction TEXT, actual TEXT, regime TEXT,
-                loss_type TEXT, confidence REAL, model_json TEXT
-            )""")
+            cur = self.conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    period TEXT UNIQUE NOT NULL,
+                    number INTEGER NOT NULL,
+                    result TEXT NOT NULL,
+                    odd_even TEXT,
+                    timestamp TEXT NOT NULL
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS predictions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    source_period TEXT,
+                    target_period TEXT,
+                    dimension TEXT,
+                    prediction TEXT,
+                    probability REAL,
+                    edge REAL,
+                    reason TEXT,
+                    regime TEXT,
+                    grade TEXT,
+                    grade_score REAL,
+                    evaluated INTEGER DEFAULT 0,
+                    actual TEXT,
+                    correct INTEGER
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS pattern_stats (
+                    name TEXT PRIMARY KEY,
+                    total INTEGER DEFAULT 0,
+                    wins INTEGER DEFAULT 0,
+                    recent_json TEXT,
+                    updated_at TEXT
+                )
+            """)
+            self.conn.commit()
+
+    def save_result(self, period, number, result, odd_even):
+        with self.lock:
+            self.conn.execute("""
+                INSERT OR IGNORE INTO history (period, number, result, odd_even, timestamp)
+                VALUES (?, ?, ?, ?, ?)
+            """, (str(period), int(number), result, odd_even, utc_now()))
             self.conn.commit()
 
     def has_period(self, period):
         with self.lock:
-            return self.conn.execute(
-                "SELECT 1 FROM history WHERE period=? LIMIT 1", (str(period),)
-            ).fetchone() is not None
+            row = self.conn.execute(
+                "SELECT 1 FROM history WHERE period = ? LIMIT 1", (str(period),)
+            ).fetchone()
+            return row is not None
 
-    def save_result(self, period, number, result):
+    def get_history_all(self, limit=MAX_HISTORY):
         with self.lock:
-            self.conn.execute(
-                "INSERT OR IGNORE INTO history (period, number, result, timestamp) VALUES (?, ?, ?, ?)",
-                (str(period), int(number), result, utc_now())
-            )
-            self.conn.commit()
-
-    def history(self, limit=MAX_HISTORY):
-        with self.lock:
-            rows = self.conn.execute(
-                "SELECT result FROM history ORDER BY id DESC LIMIT ?", (int(limit),)
-            ).fetchall()
-        return [r[0] for r in reversed(rows)]
-
-    def get_last_rows(self, limit=30):
-        with self.lock:
-            rows = self.conn.execute(
-                "SELECT period, number, result, timestamp FROM history ORDER BY id DESC LIMIT ?",
-                (int(limit),)
-            ).fetchall()
-        return [{"period": r[0], "number": r[1], "result": r[2], "timestamp": r[3]} for r in reversed(rows)]
-
-    def last_period(self):
-        with self.lock:
-            row = self.conn.execute("SELECT period FROM history ORDER BY id DESC LIMIT 1").fetchone()
-        return row[0] if row else None
+            rows = self.conn.execute("""
+                SELECT result, odd_even, number FROM history ORDER BY id DESC LIMIT ?
+            """, (int(limit),)).fetchall()
+            results = [r[0] for r in reversed(rows)]
+            odd_evens = [r[1] for r in reversed(rows)]
+            numbers = [r[2] for r in reversed(rows)]
+            return results, odd_evens, numbers
 
     def save_prediction(self, p):
         with self.lock:
-            cur = self.conn.execute("""INSERT INTO predictions (
-                created_at, source_period, target_period,
-                prediction, raw_probability, calibrated_probability, confidence,
-                state, regime, regime_age, transition, entropy, disagreement,
-                model_json, group_json, feature_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (
+            cur = self.conn.execute("""
+                INSERT INTO predictions (
+                    created_at, source_period, target_period, dimension,
+                    prediction, probability, edge, reason, regime, grade, grade_score
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
                 utc_now(), p.get("source_period"), p.get("target_period"),
-                p["prediction"], p["raw_probability"], p["calibrated_probability"],
-                p["confidence"], p["state"], p["regime"], p["regime_age"],
-                p["transition"], p["entropy"], p["disagreement"],
-                json.dumps(p["models"]), json.dumps(p["groups"]),
-                json.dumps(p["features"]),
+                p.get("dimension"), p.get("prediction"), p.get("probability", 0),
+                p.get("edge", 0), p.get("reason", ""), p.get("regime", ""),
+                p.get("grade", ""), p.get("grade_score", 0)
             ))
             self.conn.commit()
             return cur.lastrowid
 
-    def evaluate_prediction(self, pid, actual):
-        if not pid: return None
+    def evaluate_prediction(self, prediction_id, actual):
         with self.lock:
-            row = self.conn.execute("SELECT prediction FROM predictions WHERE id=?", (int(pid),)).fetchone()
-            if not row: return None
+            row = self.conn.execute(
+                "SELECT prediction FROM predictions WHERE id = ?", (prediction_id,)
+            ).fetchone()
+            if not row:
+                return None
             correct = int(row[0] == actual)
-            self.conn.execute("UPDATE predictions SET evaluated=1, actual=?, correct=? WHERE id=?",
-                              (actual, correct, int(pid)))
+            self.conn.execute("""
+                UPDATE predictions SET evaluated = 1, actual = ?, correct = ? WHERE id = ?
+            """, (actual, correct, prediction_id))
             self.conn.commit()
-        return bool(correct)
+            return bool(correct)
 
-    def load_models(self):
+    def save_pattern_stats(self, name, total, wins, recent):
         with self.lock:
-            rows = self.conn.execute("SELECT model,total,wins,errors_json,state FROM model_stats").fetchall()
-        out = {}
-        for name, total, wins, errors, state in rows:
-            try: errors = json.loads(errors or "[]")
-            except: errors = []
-            out[name] = {"total": total, "wins": wins,
-                         "errors": deque(errors, maxlen=CORR_WINDOW), "state": state}
-        return out
-
-    def save_model(self, name, s):
-        with self.lock:
-            self.conn.execute("""INSERT INTO model_stats (model,total,wins,errors_json,state)
+            self.conn.execute("""
+                INSERT INTO pattern_stats (name, total, wins, recent_json, updated_at)
                 VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(model) DO UPDATE SET
+                ON CONFLICT(name) DO UPDATE SET
                     total=excluded.total, wins=excluded.wins,
-                    errors_json=excluded.errors_json, state=excluded.state""",
-                (name, s["total"], s["wins"], json.dumps(list(s["errors"])), s["state"]))
+                    recent_json=excluded.recent_json, updated_at=excluded.updated_at
+            """, (name, total, wins, json.dumps(list(recent)), utc_now()))
             self.conn.commit()
 
-    def load_context(self):
+    def load_pattern_stats(self):
         with self.lock:
-            rows = self.conn.execute("SELECT context,total,wins FROM context_stats").fetchall()
-        return {k: {"total": n, "wins": w} for k, n, w in rows}
-
-    def save_context(self, key, s):
-        with self.lock:
-            self.conn.execute("""INSERT INTO context_stats(context,total,wins) VALUES (?, ?, ?)
-                ON CONFLICT(context) DO UPDATE SET total=excluded.total, wins=excluded.wins""",
-                (key, s["total"], s["wins"]))
-            self.conn.commit()
-
-    def load_groups(self):
-        with self.lock:
-            rows = self.conn.execute("SELECT group_name,total,wins FROM group_stats").fetchall()
-        return {k: {"total": n, "wins": w} for k, n, w in rows}
-
-    def save_group(self, key, s):
-        with self.lock:
-            self.conn.execute("""INSERT INTO group_stats(group_name,total,wins) VALUES (?, ?, ?)
-                ON CONFLICT(group_name) DO UPDATE SET total=excluded.total, wins=excluded.wins""",
-                (key, s["total"], s["wins"]))
-            self.conn.commit()
-
-    def load_calibration(self):
-        with self.lock:
-            rows = self.conn.execute("SELECT bucket,total,wins FROM calibration").fetchall()
-        return {k: {"total": n, "wins": w} for k, n, w in rows}
-
-    def save_calibration(self, key, s):
-        with self.lock:
-            self.conn.execute("""INSERT INTO calibration(bucket,total,wins) VALUES (?, ?, ?)
-                ON CONFLICT(bucket) DO UPDATE SET total=excluded.total, wins=excluded.wins""",
-                (key, s["total"], s["wins"]))
-            self.conn.commit()
-
-    def load_meta(self, key, default=None):
-        with self.lock:
-            row = self.conn.execute("SELECT value FROM meta_state WHERE key=?", (key,)).fetchone()
-        if not row: return default
-        try: return json.loads(row[0])
-        except: return default
-
-    def save_meta(self, key, value):
-        with self.lock:
-            self.conn.execute("""INSERT INTO meta_state(key,value) VALUES (?, ?)
-                ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
-                (key, json.dumps(value, ensure_ascii=False)))
-            self.conn.commit()
-
-    def save_loss(self, p):
-        with self.lock:
-            self.conn.execute("""INSERT INTO loss_analysis (
-                created_at, source_period, prediction, actual, regime,
-                loss_type, confidence, model_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""", (
-                utc_now(), p.get("source_period"), p.get("prediction"),
-                p.get("actual"), p.get("regime"), p.get("loss_type", "UNKNOWN"),
-                p.get("confidence", 0.5), json.dumps(p.get("models", {}), ensure_ascii=False)))
-            self.conn.commit()
-
-    def loss_types(self):
-        with self.lock:
-            rows = self.conn.execute("""SELECT loss_type, COUNT(*) FROM loss_analysis
-                GROUP BY loss_type ORDER BY COUNT(*) DESC""").fetchall()
-        return {r[0]: r[1] for r in rows}
-
-    def report(self):
-        with self.lock:
-            total = self.conn.execute("SELECT COUNT(*) FROM predictions WHERE evaluated=1").fetchone()[0]
-            wins = self.conn.execute("SELECT COALESCE(SUM(correct),0) FROM predictions WHERE evaluated=1").fetchone()[0]
-            live_total = self.conn.execute("SELECT COUNT(*) FROM predictions WHERE evaluated=1 AND state='LIVE'").fetchone()[0]
-            live_wins = self.conn.execute("SELECT COALESCE(SUM(correct),0) FROM predictions WHERE evaluated=1 AND state='LIVE'").fetchone()[0]
-            shadow_total = self.conn.execute("SELECT COUNT(*) FROM predictions WHERE evaluated=1 AND state='SHADOW'").fetchone()[0]
-            shadow_wins = self.conn.execute("SELECT COALESCE(SUM(correct),0) FROM predictions WHERE evaluated=1 AND state='SHADOW'").fetchone()[0]
-        return {"total": total, "wins": wins, "wr": wins/total if total else None,
-                "live_total": live_total, "live_wins": live_wins,
-                "live_wr": live_wins/live_total if live_total else None,
-                "shadow_total": shadow_total, "shadow_wins": shadow_wins,
-                "shadow_wr": shadow_wins/shadow_total if shadow_total else None}
+            rows = self.conn.execute("SELECT name, total, wins, recent_json FROM pattern_stats").fetchall()
+            out = {}
+            for name, total, wins, recent_json in rows:
+                try: recent = json.loads(recent_json or "[]")
+                except Exception: recent = []
+                out[name] = {"total": int(total), "wins": int(wins), "recent": recent}
+            return out
 
 
 # ============================================================
-# MODEL GROUPS
+# PATTERN TRACKER
 # ============================================================
-
-MODEL_GROUP = {
-    "markov2": "SEQUENCE", "markov3": "SEQUENCE",
-    "mirror3": "SEQUENCE", "repeat4": "SEQUENCE",
-    "frequency20": "DISTRIBUTION", "bias10": "DISTRIBUTION",
-    "streak_continue": "STREAK", "streak_reversal": "STREAK",
-    "run_length": "STREAK",
-    "transition": "TRANSITION", "alternating": "ALTERNATION",
-}
-
-
-# ============================================================
-# BASE MODELS
-# ============================================================
-
-class BaseModels:
-    @staticmethod
-    def conditional(arr, n):
-        if len(arr) <= n: return 0.50
-        key = tuple(arr[-n:])
-        nxt = []
-        for i in range(len(arr) - n):
-            if tuple(arr[i:i+n]) == key:
-                nxt.append(arr[i+n])
-        if not nxt: return 0.50
-        return nxt.count("Big") / len(nxt)
-
-    def predict(self, arr):
-        out = {}
-        out["markov2"] = self.conditional(arr, 2)
-        out["markov3"] = self.conditional(arr, 3)
-        if len(arr) >= 7:
-            key = tuple(arr[-3:])
-            nxt = [arr[i+3] for i in range(len(arr)-3) if tuple(arr[i:i+3]) == key]
-            out["mirror3"] = nxt.count("Big") / len(nxt) if nxt else 0.50
-        else:
-            out["mirror3"] = 0.50
-        if len(arr) >= 9:
-            key = tuple(arr[-4:])
-            nxt = [arr[i+4] for i in range(len(arr)-4) if tuple(arr[i:i+4]) == key]
-            out["repeat4"] = nxt.count("Big") / len(nxt) if nxt else 0.50
-        else:
-            out["repeat4"] = 0.50
-        w20 = arr[-20:]; w10 = arr[-10:]
-        out["frequency20"] = w20.count("Big") / len(w20) if w20 else 0.50
-        out["bias10"] = w10.count("Big") / len(w10) if w10 else 0.50
-        last = arr[-1] if arr else "Big"
-        same = 0; total = 0
-        for i in range(len(arr)-1):
-            if arr[i] == last:
-                total += 1
-                same += int(arr[i+1] == arr[i])
-        continuation = same / total if total else 0.50
-        out["transition"] = continuation if last == "Big" else 1.0 - continuation
-        recent = arr[-6:]
-        flips = sum(int(recent[i] != recent[i-1]) for i in range(1, len(recent)))
-        alt_rate = flips / max(1, len(recent)-1)
-        out["alternating"] = (1.0 - alt_rate) if last == "Big" else alt_rate
-        s = streak_length(arr)
-        cont_samples = []
-        for i in range(1, len(arr)-1):
-            if arr[i] == arr[i-1]:
-                cont_samples.append(int(arr[i+1] == arr[i]))
-        cont_rate = sum(cont_samples) / len(cont_samples) if cont_samples else 0.50
-        cont_rate = 0.50 + (cont_rate - 0.50) * min(1.0, len(cont_samples) / 40.0)
-        if s >= 3: cont_rate = 0.50 + (cont_rate - 0.50) * 0.80
-        elif s == 2: cont_rate = 0.50 + (cont_rate - 0.50) * 0.60
-        out["streak_continue"] = cont_rate if last == "Big" else 1.0 - cont_rate
-        out["streak_reversal"] = 1.0 - out["streak_continue"]
-        bucket = streak_bucket(s)
-        run_samples = []
-        for i in range(1, len(arr)-1):
-            run = 1; j = i - 1
-            while j >= 0 and arr[j] == arr[i]:
-                run += 1; j -= 1
-            if streak_bucket(run) == bucket:
-                run_samples.append(int(arr[i+1] == arr[i]))
-        run_rate = sum(run_samples) / len(run_samples) if run_samples else cont_rate
-        run_rate = 0.50 + (run_rate - 0.50) * min(1.0, len(run_samples) / 30.0)
-        out["run_length"] = run_rate if last == "Big" else 1.0 - run_rate
-        return {k: clamp(v, 0.05, 0.95) for k, v in out.items()}
-
-
-# ============================================================
-# REGIME
-# ============================================================
-
-class RegimeEngine:
-    def __init__(self):
-        self.last = None; self.age = 0
-
-    def detect(self, arr):
-        if len(arr) < 20:
-            return {"name": "UNKNOWN", "age": 0, "transition": 0,
-                    "p_big": 0.50, "acf1": 0, "acf2": 0, "acf3": 0, "stability": 0}
-        w = arr[-20:]
-        p_big = w.count("Big") / 20
-        acf1 = acf(w, 1); acf2 = acf(w, 2); acf3 = acf(w, 3)
-        flips = sum(int(w[i] != w[i-1]) for i in range(1, len(w)))
-        alternation = flips / 19
-        persistence = 1 - alternation
-        a = w[:10]; b = w[10:]
-        p1 = a.count("Big") / 10; p2 = b.count("Big") / 10
-        stability = 1 - abs(p1 - p2)
-        if acf1 <= -0.25 or alternation >= 0.72: name = "ALTERNATING"
-        elif p_big >= 0.65 or p_big <= 0.35: name = "TREND"
-        elif abs(acf1) < 0.12 and 0.45 <= p_big <= 0.55: name = "CHAOS"
-        elif persistence >= 0.58: name = "PERSISTENT"
-        else: name = "MIXED"
-        transition = int(self.last is not None and self.last != name)
-        if self.last is None or transition: self.age = 1
-        else: self.age += 1
-        self.last = name
-        return {"name": name, "age": self.age, "transition": transition,
-                "p_big": p_big, "acf1": acf1, "acf2": acf2, "acf3": acf3,
-                "stability": stability}
-
-
-# ============================================================
-# RELIABILITY / CONTEXT / FUSION / META / CALIBRATION / FILTER / LOSS
-# ============================================================
-
-class Reliability:
-    def __init__(self, db):
-        self.db = db; self.stats = db.load_models()
-    def ensure(self, name):
-        if name not in self.stats:
-            self.stats[name] = {"total": 0, "wins": 0,
-                                "errors": deque(maxlen=CORR_WINDOW), "state": "NEW"}
-    def raw_wr(self, name):
-        self.ensure(name); s = self.stats[name]
-        return s["wins"]/s["total"] if s["total"] else 0.50
-    def shrunk_wr(self, name):
-        self.ensure(name); s = self.stats[name]
-        return beta_mean(s["wins"], s["total"], 0.50, PRIOR_N)
-    def update(self, name, predicted, actual):
-        self.ensure(name); s = self.stats[name]
-        correct = int(predicted == actual)
-        s["total"] += 1; s["wins"] += correct
-        s["errors"].append(0 if correct else 1)
-        n = len(s["errors"])
-        recent_wr = 1 - sum(s["errors"])/n if n else 0.50
-        long_wr = self.raw_wr(name)
-        if s["total"] < 15: state = "NEW"
-        elif s["total"] < 25: state = "SHADOW"
-        elif recent_wr >= 0.58 and long_wr >= 0.55: state = "CANDIDATE"
-        elif recent_wr >= 0.52: state = "ACTIVE"
-        elif recent_wr >= 0.47: state = "WEAK"
-        else: state = "SHADOW"
-        s["state"] = state
-        self.db.save_model(name, s)
-    def error_corr(self, a, b):
-        self.ensure(a); self.ensure(b)
-        x = list(self.stats[a]["errors"]); y = list(self.stats[b]["errors"])
-        n = min(len(x), len(y))
-        if n < MIN_CORR_N: return 0.0
-        x = x[-n:]; y = y[-n:]
-        mx = sum(x)/n; my = sum(y)/n
-        vx = sum((v-mx)**2 for v in x); vy = sum((v-my)**2 for v in y)
-        if vx <= 1e-12 or vy <= 1e-12: return 0.0
-        cov = sum((x[i]-mx)*(y[i]-my) for i in range(n))
-        return clamp(cov/math.sqrt(vx*vy), -1, 1)
-    def weight(self, name):
-        self.ensure(name); s = self.stats[name]
-        n = s["total"]
-        if n == 0: return 0.50
-        wr = self.shrunk_wr(name)
-        factor = {"NEW": 0.45, "SHADOW": 0.55, "CANDIDATE": 0.80,
-                  "ACTIVE": 1.00, "WEAK": 0.60}.get(s["state"], 0.50)
-        sample = min(1.0, math.sqrt(n / 50))
-        return clamp(0.50 + (wr - 0.50) * factor * sample * 3.0, 0.10, 0.95)
-
-
-class Context:
-    def __init__(self, db):
-        self.db = db; self.stats = db.load_context()
-    def make_key(self, model, regime, arr):
-        last = arr[-1] if arr else "NA"
-        sb = streak_bucket(streak_length(arr))
-        w = arr[-10:]
-        p = w.count("Big") / max(1, len(w))
-        if p >= 0.60: bias = "BIG"
-        elif p <= 0.40: bias = "SMALL"
-        else: bias = "NEUTRAL"
-        return f"{model}|{regime}|{last}|{sb}|{bias}"
-    def reliability(self, model, regime, arr):
-        key = self.make_key(model, regime, arr)
-        s = self.stats.get(key, {"total": 0, "wins": 0})
-        if s["total"] >= 12:
-            return beta_mean(s["wins"], s["total"], 0.50, CONTEXT_PRIOR_N)
-        prefix = f"{model}|{regime}|"
-        total = 0; wins = 0
-        for k, v in self.stats.items():
-            if k.startswith(prefix):
-                total += v["total"]; wins += v["wins"]
-        if total >= 12:
-            return beta_mean(wins, total, 0.50, CONTEXT_PRIOR_N)
-        return 0.50
-    def update(self, model, regime, arr, correct):
-        key = self.make_key(model, regime, arr)
-        if key not in self.stats:
-            self.stats[key] = {"total": 0, "wins": 0}
-        self.stats[key]["total"] += 1
-        self.stats[key]["wins"] += int(correct)
-        self.db.save_context(key, self.stats[key])
-
-
-class Fusion:
-    def __init__(self, rel, ctx):
-        self.rel = rel; self.ctx = ctx
-    def discount_correlated(self, probs):
-        out = {}
-        for m, p in probs.items():
-            penalty = 0.0
-            for other in probs:
-                if m == other: continue
-                corr = self.rel.error_corr(m, other)
-                if corr > 0.30: penalty += corr
-            discount = 1.0 / (1.0 + 0.12 * penalty)
-            out[m] = 0.50 + (p - 0.50) * discount
-        return out
-    def groups(self, probs, regime, arr):
-        buckets = defaultdict(list)
-        for model, p in probs.items():
-            buckets[MODEL_GROUP[model]].append((model, p))
-        group_probs = {}; group_weights = {}
-        for group, items in buckets.items():
-            num = 0.0; den = 0.0
-            for model, p in items:
-                mw = self.rel.weight(model)
-                cw = self.ctx.reliability(model, regime, arr)
-                context_factor = 0.5 + abs(cw - 0.5) * 2.0
-                w = mw * context_factor
-                num += safe_logit(p) * w; den += w
-            gp = sigmoid(num/den) if den else 0.50
-            group_probs[group] = clamp(gp, 0.05, 0.95)
-            group_weights[group] = den / max(1, len(items))
-        return group_probs, group_weights
-
-
-class MetaLearner:
+class PatternTracker:
     def __init__(self, db):
         self.db = db
-        self.features = list(MODEL_GROUP.keys()) + [
-            "regime_age", "regime_transition", "acf1", "acf2", "acf3",
-            "stability", "disagreement"]
-        saved = db.load_meta("weights")
-        if isinstance(saved, dict):
-            self.bias = float(saved.get("_bias", 0))
-            self.weights = {f: float(saved.get(f, 0)) for f in self.features}
-        else:
-            self.bias = 0.0
-            self.weights = {f: 0.0 for f in self.features}
-    def predict(self, x):
-        z = self.bias
-        for f in self.features: z += self.weights[f] * x.get(f, 0.0)
-        return sigmoid(z)
-    def update(self, x, target):
-        p = self.predict(x); err = p - target
-        self.bias -= LEARNING_RATE * err
-        for f in self.features:
-            value = x.get(f, 0.0)
-            grad = err * value + L2_PENALTY * self.weights[f]
-            self.weights[f] -= LEARNING_RATE * grad
-        state = dict(self.weights); state["_bias"] = self.bias
-        self.db.save_meta("weights", state)
+        self.total = defaultdict(int)
+        self.wins = defaultdict(int)
+        self.recent = defaultdict(lambda: deque(maxlen=50))
+        saved = db.load_pattern_stats()
+        for name, item in saved.items():
+            self.total[name] = item["total"]
+            self.wins[name] = item["wins"]
+            self.recent[name].extend(item["recent"][-50:])
 
+    def update(self, name, predicted, actual):
+        self.total[name] += 1
+        correct = (predicted == actual)
+        if correct: self.wins[name] += 1
+        self.recent[name].append(1 if correct else 0)
+        self.db.save_pattern_stats(name, self.total[name], self.wins[name], self.recent[name])
 
-class Calibration:
-    def __init__(self, db):
-        self.db = db; self.stats = db.load_calibration()
-    @staticmethod
-    def bucket(c):
-        c = clamp(c, 0.50, 0.95)
-        idx = min(int((c - 0.50) / 0.05), 8)
-        lo = 0.50 + idx * 0.05
-        return f"{lo:.2f}-{lo+0.05:.2f}"
-    def calibrate(self, raw):
-        d = "Big" if raw >= 0.50 else "Small"
-        c = raw if d == "Big" else 1.0 - raw
-        bucket = self.bucket(c)
-        s = self.stats.get(bucket, {"total": 0, "wins": 0})
-        emp = beta_mean(s["wins"], s["total"], 0.50, PRIOR_N)
-        nf = min(1.0, s["total"]/100.0)
-        cc = c * (1 - 0.60 * nf) + emp * (0.60 * nf)
-        cc = clamp(cc, 0.50, 0.95)
-        return cc if d == "Big" else 1.0 - cc
-    def update(self, prob, actual):
-        d = "Big" if prob >= 0.50 else "Small"
-        c = prob if d == "Big" else 1.0 - prob
-        bucket = self.bucket(c)
-        if bucket not in self.stats:
-            self.stats[bucket] = {"total": 0, "wins": 0}
-        self.stats[bucket]["total"] += 1
-        self.stats[bucket]["wins"] += int(d == actual)
-        self.db.save_calibration(bucket, self.stats[bucket])
-
-
-class SignalFilter:
-    def decide(self, prob, groups, regime):
-        d = "Big" if prob >= 0.50 else "Small"
-        c = prob if d == "Big" else 1.0 - prob
-        vals = list(groups.values())
-        agreement = sum(int((p >= 0.50) == (d == "Big")) for p in vals)/len(vals) if vals else 0
-        disagreement = 1.0 - agreement
-        ent = entropy_binary(prob)
-        if c < REJECT_CONF: state = "REJECTED"
-        elif disagreement >= 0.50: state = "SHADOW"
-        elif regime["transition"]:
-            state = "LIVE" if c >= 0.62 else "SHADOW"
-        elif c >= MIN_LIVE_CONF and disagreement <= 0.35: state = "LIVE"
-        else: state = "SHADOW"
-        return state, disagreement, ent
-
-
-class LossClassifier:
-    @staticmethod
-    def classify(pred, actual, regime, models):
-        if pred == actual: return "WIN"
-        wrong = [m for m, p in models.items() if (p >= 0.5) != (actual == "Big")]
-        nw = len(wrong); nt = len(models)
-        if regime in ("CHAOS", "MIXED"): return "WRONG_REGIME"
-        if nw >= nt * 0.7: return "MODEL_FAILURE"
-        if any("markov" in m for m in wrong): return "MARKOV_FAILURE"
-        if any("streak" in m for m in wrong): return "STREAK_FAILURE"
-        if any("transition" in m for m in wrong): return "TRANSITION_FAILURE"
-        if any("mirror" in m or "repeat" in m for m in wrong): return "SEQUENCE_FAILURE"
-        return "OTHER"
+    def score(self, name):
+        n = self.total[name]
+        if n == 0: return 1.0
+        posterior = (self.wins[name] + 10.0) / (n + 20.0)
+        recent_data = list(self.recent[name])
+        recent_wr = sum(recent_data) / len(recent_data) if recent_data else 0.5
+        blended = posterior * 0.65 + recent_wr * 0.35
+        return clamp(0.70 + (blended - 0.5) * 2.0, 0.50, 1.40)
 
 
 # ============================================================
-# MAIN ENGINE
+# REGIME DETECTOR (Anti-Trap Detection)
 # ============================================================
+class RegimeDetector:
+    def detect(self, arr, val1):
+        if len(arr) < 18:
+            return {"name": "BALANCED", "entropy": entropy_binary(arr, val1), "is_trap": False}
 
-class HybridEngineV87:
-    def __init__(self):
-        self.db = Database()
-        self.models = BaseModels()
-        self.regime = RegimeEngine()
-        self.reliability = Reliability(self.db)
-        self.context = Context(self.db)
-        self.fusion = Fusion(self.reliability, self.context)
-        self.meta = MetaLearner(self.db)
-        self.calibration = Calibration(self.db)
-        self.filter = SignalFilter()
-        self.last_prediction = None
-        self.lock = threading.RLock()
+        recent20 = arr[-20:]
+        recent8 = arr[-8:]
+        ent = entropy_binary(recent20, val1)
+        trans = transition_rate(recent20)
+        trans8 = transition_rate(recent8)
+        streak_len, _ = current_streak(arr)
+        bias = recent20.count(val1) / len(recent20)
 
-    def predict_next(self, source_period=None, target_period=None):
-        with self.lock:
-            arr = self.db.history()
-            if len(arr) < MIN_HISTORY:
-                return {"status": "WAIT", "reason": f"Need {MIN_HISTORY}; have {len(arr)}"}
-            regime = self.regime.detect(arr)
-            base = self.models.predict(arr)
-            discounted = self.fusion.discount_correlated(base)
-            groups, group_weights = self.fusion.groups(discounted, regime["name"], arr)
-            group_values = list(groups.values())
-            group_mean = sum(group_values)/len(group_values) if group_values else 0.50
-            prelim = "Big" if group_mean >= 0.50 else "Small"
-            agreement = sum(int((p >= 0.50) == (prelim == "Big")) for p in group_values)/len(group_values) if group_values else 0
-            disagreement = 1.0 - agreement
-            features = {}
-            for model in MODEL_GROUP: features[model] = discounted.get(model, 0.50) - 0.50
-            features["regime_age"] = clamp(regime["age"]/20.0, 0, 1)
-            features["regime_transition"] = float(regime["transition"])
-            features["acf1"] = regime["acf1"]; features["acf2"] = regime["acf2"]
-            features["acf3"] = regime["acf3"]; features["stability"] = regime["stability"]
-            features["disagreement"] = disagreement
-            meta_prob = self.meta.predict(features)
-            raw = 0.65 * meta_prob + 0.35 * group_mean
-            raw = clamp(raw, 0.05, 0.95)
-            calibrated = self.calibration.calibrate(raw)
-            if regime["transition"]:
-                calibrated = 0.50 + (calibrated - 0.50) * 0.50
-            state, disagreement, ent = self.filter.decide(calibrated, groups, regime)
-            prediction = "Big" if calibrated >= 0.50 else "Small"
-            confidence = calibrated if prediction == "Big" else 1.0 - calibrated
-            payload = {
-                "status": "OK", "prediction": prediction,
-                "raw_probability": raw, "calibrated_probability": calibrated,
-                "confidence": confidence, "state": state,
-                "regime": regime["name"], "regime_age": regime["age"],
-                "transition": regime["transition"], "entropy": ent,
-                "disagreement": disagreement, "models": base,
-                "discounted_models": discounted, "groups": groups,
-                "group_weights": group_weights, "features": features,
-                "source_period": source_period or self.db.last_period(),
-                "target_period": target_period,
-            }
-            if state in ("LIVE", "SHADOW"):
-                payload["prediction_id"] = self.db.save_prediction(payload)
+        # Anti-trap: High alternating cycles >= 7 turns
+        if trans8 >= 0.875 and streak_len == 1:
+            return {"name": "EXTENDED_ALTERNATING_TRAP", "entropy": ent, "is_trap": True}
+
+        if trans >= 0.80:   return {"name": "ALTERNATING", "entropy": ent, "is_trap": False}
+        if streak_len >= 5: return {"name": "LONG_STREAK", "entropy": ent, "is_trap": False}
+        if bias >= 0.75:    return {"name": "HIGH_BIAS", "entropy": ent, "is_trap": False}
+        if bias <= 0.25:    return {"name": "LOW_BIAS", "entropy": ent, "is_trap": False}
+        if trans >= 0.65:   return {"name": "FAST_SWITCH", "entropy": ent, "is_trap": False}
+        if ent < 0.45:      return {"name": "CHAOTIC", "entropy": ent, "is_trap": False}
+        return {"name": "BALANCED", "entropy": ent, "is_trap": False}
+
+
+# ============================================================
+# UNIVERSAL PATTERN ENGINE (Big/Small & Odd/Even)
+# ============================================================
+class UniversalPatternEngine:
+    def predict(self, arr, regime, v1, v2, nums=None):
+        models = {}
+        # 1. Statistical Family
+        m = self.freq_zscore(arr, v1, v2)
+        if m: models[m["name"]] = m
+
+        m = self.recent_zscore(arr, v1, v2)
+        if m: models[m["name"]] = m
+
+        if nums and v1 == "Big":
+            m = self.ma_momentum(nums)
+            if m: models[m["name"]] = m
+
+        # 2. Memory / Markov Family
+        m = self.markov2(arr, v1, v2)
+        if m: models[m["name"]] = m
+
+        m = self.markov3(arr, v1, v2)
+        if m: models[m["name"]] = m
+
+        m = self.mirror3(arr, v1, v2)
+        if m: models[m["name"]] = m
+
+        # 3. Streak / Sequence Family
+        m = self.streak_continue(arr, regime)
+        if m: models[m["name"]] = m
+
+        m = self.streak_reversal(arr, regime, v1, v2)
+        if m: models[m["name"]] = m
+
+        m = self.alternating(arr, regime, v1, v2)
+        if m: models[m["name"]] = m
+
+        return models
+
+    def freq_zscore(self, arr, v1, v2):
+        if len(arr) < 22: return None
+        sub = arr[-24:]
+        z = calculate_z_score(sub.count(v1), len(sub), 0.5)
+        if abs(z) < MIN_Z_SCORE: return None
+        return {
+            "name": "freq_zscore", "family": "STATISTICAL",
+            "signal": v1 if z > 0 else v2,
+            "probability": clamp(0.50 + abs(z) * 0.08, 0.54, 0.80),
+            "support": len(sub)
+        }
+
+    def recent_zscore(self, arr, v1, v2):
+        if len(arr) < 12: return None
+        sub = arr[-12:]
+        z = calculate_z_score(sub.count(v1), len(sub), 0.5)
+        if abs(z) < 1.45: return None
+        return {
+            "name": "recent_zscore", "family": "STATISTICAL",
+            "signal": v1 if z > 0 else v2,
+            "probability": clamp(0.50 + abs(z) * 0.09, 0.52, 0.77),
+            "support": len(sub)
+        }
+
+    def ma_momentum(self, nums):
+        if len(nums) < 12: return None
+        sub = nums[-12:]
+        avg = sum(sub) / len(sub)
+        if avg >= 5.75:
+            return {"name": "ma_momentum", "family": "STATISTICAL", "signal": "Big",
+                    "probability": clamp(0.50 + (avg - 5.0) * 0.18, 0.53, 0.76), "support": 12}
+        elif avg <= 4.25:
+            return {"name": "ma_momentum", "family": "STATISTICAL", "signal": "Small",
+                    "probability": clamp(0.50 + (5.0 - avg) * 0.18, 0.53, 0.76), "support": 12}
+        return None
+
+    def markov2(self, arr, v1, v2):
+        if len(arr) < 25: return None
+        ctx = tuple(arr[-2:])
+        foll = [arr[i + 2] for i in range(len(arr) - 2) if tuple(arr[i:i + 2]) == ctx]
+        if len(foll) < 4: return None
+        p_v1 = foll.count(v1) / len(foll)
+        sig = v1 if p_v1 >= 0.5 else v2
+        p = max(p_v1, 1.0 - p_v1)
+        if p < 0.56: return None
+        return {"name": "markov2", "family": "MEMORY", "signal": sig,
+                "probability": clamp(p, 0.50, 0.85), "support": len(foll)}
+
+    def markov3(self, arr, v1, v2):
+        if len(arr) < 32: return None
+        ctx = tuple(arr[-3:])
+        foll = [arr[i + 3] for i in range(len(arr) - 3) if tuple(arr[i:i + 3]) == ctx]
+        if len(foll) < 4: return None
+        p_v1 = foll.count(v1) / len(foll)
+        sig = v1 if p_v1 >= 0.5 else v2
+        p = max(p_v1, 1.0 - p_v1)
+        if p < 0.58: return None
+        return {"name": "markov3", "family": "MEMORY", "signal": sig,
+                "probability": clamp(p, 0.50, 0.88), "support": len(foll)}
+
+    def mirror3(self, arr, v1, v2):
+        if len(arr) < 18: return None
+        ctx = tuple(arr[-3:])
+        matches = [arr[i + 3] for i in range(len(arr) - 4) if tuple(arr[i:i + 3]) == ctx]
+        if len(matches) < 3: return None
+        counts = Counter(matches)
+        win, cnt = counts.most_common(1)[0]
+        p = cnt / len(matches)
+        if p < 0.60: return None
+        return {"name": "mirror3", "family": "MEMORY", "signal": win,
+                "probability": clamp(p, 0.50, 0.78), "support": len(matches)}
+
+    def streak_continue(self, arr, regime):
+        if len(arr) < 6: return None
+        streak, last = current_streak(arr)
+        if streak < 3: return None
+        p = clamp(0.50 + min(streak, 8) * 0.03, 0.50, 0.72)
+        return {"name": "streak_continue", "family": "STREAK", "signal": last,
+                "probability": p, "support": streak}
+
+    def streak_reversal(self, arr, regime, v1, v2):
+        if len(arr) < 8: return None
+        streak, last = current_streak(arr)
+        if streak < 4: return None
+        opp = v2 if last == v1 else v1
+        p = clamp(0.50 + min(streak - 3, 5) * 0.035, 0.50, 0.70)
+        return {"name": "streak_reversal", "family": "STREAK", "signal": opp,
+                "probability": p, "support": streak}
+
+    def alternating(self, arr, regime, v1, v2):
+        if len(arr) < 6 or regime.get("is_trap"): return None
+        sub = arr[-6:]
+        rate = transition_rate(sub)
+        if rate < 0.75: return None
+        sig = v2 if arr[-1] == v1 else v1
+        return {"name": "alternating", "family": "STREAK", "signal": sig,
+                "probability": clamp(0.50 + (rate - 0.5) * 0.35, 0.52, 0.70), "support": 6}
+
+
+# ============================================================
+# EVIDENCE FUSION (Dynamic Regime Switching + Family Voting)
+# ============================================================
+class EvidenceFusion:
+    def __init__(self, tracker):
+        self.tracker = tracker
+
+    def combine(self, models, regime, v1, v2):
+        if not models:
+            return None
+
+        # Group by families for voting
+        family_evidence = defaultdict(lambda: {v1: 0.0, v2: 0.0})
+        total_evidence_v1 = 0.0
+        total_evidence_v2 = 0.0
+
+        for name, m in models.items():
+            sig = m["signal"]
+            prob = m["probability"]
+            fam = m["family"]
+            score = self.tracker.score(name)
+            reg_mult = self.get_regime_multiplier(name, regime)
+            weight = score * reg_mult
+            signed = (prob - 0.5) * 2.0 * weight
+
+            if sig == v1:
+                family_evidence[fam][v1] += signed
+                total_evidence_v1 += signed
             else:
-                payload["prediction_id"] = None
-            self.last_prediction = payload
-            return payload
+                family_evidence[fam][v2] += signed
+                total_evidence_v2 += signed
 
-    def evaluate_last(self, actual):
-        with self.lock:
-            p = self.last_prediction
-            if not p: return None
-            if p["state"] not in ("LIVE", "SHADOW"):
-                self.last_prediction = None
-                return None
-            correct = int(p["prediction"] == actual)
-            self.db.evaluate_prediction(p.get("prediction_id"), actual)
-            self.meta.update(p["features"], result_value(actual))
-            self.calibration.update(p["calibrated_probability"], actual)
-            arr = self.db.history()
-            for model, probability in p["models"].items():
-                sub = "Big" if probability >= 0.50 else "Small"
-                self.reliability.update(model, sub, actual)
-                self.context.update(model, p["regime"], arr, sub == actual)
-            old_groups = self.db.load_groups()
-            for group, probability in p["groups"].items():
-                if group not in old_groups:
-                    old_groups[group] = {"total": 0, "wins": 0}
-                s = old_groups[group]
-                s["total"] += 1
-                s["wins"] += int(("Big" if probability >= 0.50 else "Small") == actual)
-                self.db.save_group(group, s)
-            if not correct:
-                lt = LossClassifier.classify(p["prediction"], actual, p["regime"], p["models"])
-                self.db.save_loss({"source_period": p.get("source_period"),
-                                   "prediction": p["prediction"], "actual": actual,
-                                   "regime": p["regime"], "loss_type": lt,
-                                   "confidence": p["confidence"], "models": p["models"]})
-            result = {"prediction": p["prediction"], "actual": actual,
-                      "correct": correct, "state": p["state"],
-                      "confidence": p["confidence"]}
-            self.last_prediction = None
-            return result
+        # Determine overall prediction
+        net = total_evidence_v1 - total_evidence_v2
+        prediction = v1 if net >= 0 else v2
+        raw_prob = clamp(0.50 + abs(net) / max(1.0, len(models)), 0.50, 0.95)
 
+        # Family Voting (Consensus Check)
+        family_votes = {}
+        agreeing_families = 0
+        for fam, votes in family_evidence.items():
+            fam_winner = v1 if votes[v1] >= votes[v2] else v2
+            family_votes[fam] = fam_winner
+            if fam_winner == prediction:
+                agreeing_families += 1
 
-# ============================================================
-# API CLIENT (lowercase headers)
-# ============================================================
+        consensus = (agreeing_families >= 2)
 
-def fetch_api_raw():
-    headers = {
-        "accept": "application/json, text/plain, */*",
-        "content-type": "application/json;charset=UTF-8",
-        "user-agent": "Mozilla/5.0",
-    }
-    if API_AUTH:
-        headers["authorization"] = f"Bearer {API_AUTH}"
-    if API_ORIGIN:
-        headers["origin"] = API_ORIGIN
-    if API_REFERER:
-        headers["referer"] = API_REFERER
+        signals = [m["signal"] for m in models.values()]
+        agreement = sum(s == prediction for s in signals) / len(signals)
+        disagreement = 1.0 - agreement
 
-    payload = {
-        "pageSize": API_PAGE_SIZE,
-        "pageNo": 1,
-        "typeId": API_TYPE_ID,
-        "language": API_LANGUAGE,
-        "timestamp": int(time.time()),
-    }
-    if API_RANDOM: payload["random"] = API_RANDOM
-    if API_SIGNATURE: payload["signature"] = API_SIGNATURE
+        return {
+            "prediction": prediction,
+            "raw_probability": raw_prob,
+            "agreement": agreement,
+            "disagreement": disagreement,
+            "consensus": consensus,
+            "agreeing_families": agreeing_families,
+            "models": models
+        }
 
-    r = requests.post(API_URL, json=payload, headers=headers, timeout=REQUEST_TIMEOUT)
-    raw = r.text
-    try: parsed = r.json()
-    except: parsed = None
-    return r.status_code, raw, parsed, payload, headers
-
-
-def extract_rows(data):
-    if not isinstance(data, dict):
-        if isinstance(data, list): return data
-        return []
-    if isinstance(data.get("data"), dict):
-        d = data["data"]
-        for key in ("list", "rows", "items", "results", "data"):
-            if isinstance(d.get(key), list): return d[key]
-    if isinstance(data.get("data"), list): return data["data"]
-    for key in ("list", "rows", "items", "results", "data"):
-        if isinstance(data.get(key), list): return data[key]
-    if isinstance(data.get("result"), dict):
-        r = data["result"]
-        for key in ("list", "rows", "items"):
-            if isinstance(r.get(key), list): return r[key]
-    return []
-
-
-def fetch_api():
-    _, _, parsed, _, _ = fetch_api_raw()
-    if parsed is None: return []
-    return extract_rows(parsed)
-
-
-def parse_row(row):
-    period = (row.get("issueNumber") or row.get("period") or row.get("issue")
-              or row.get("periodNumber") or row.get("PreIssue"))
-    number = (row.get("number") if row.get("number") is not None
-              else row.get("result") if row.get("result") is not None
-              else row.get("num") if row.get("num") is not None
-              else row.get("PreNum"))
-    if period is None or number is None: return None
-    try:
-        period = str(period)
-        number = int(number)
-    except: return None
-    result = "Big" if number >= 5 else "Small"
-    return period, number, result
-
-
-def apply_offset(raw_period):
-    try: return str(int(str(raw_period)) + PERIOD_OFFSET)
-    except: return str(raw_period)
+    @staticmethod
+    def get_regime_multiplier(model_name, regime):
+        r = regime["name"]
+        # Dynamic Regime Switching (Specialization multipliers)
+        if r == "LONG_STREAK":
+            if model_name == "streak_continue": return 1.35
+            if model_name == "streak_reversal": return 0.50
+        elif r in ("ALTERNATING", "FAST_SWITCH"):
+            if model_name in ("alternating", "markov2"): return 1.30
+            if model_name == "streak_continue": return 0.55
+        elif r in ("HIGH_BIAS", "LOW_BIAS"):
+            if "zscore" in model_name or model_name == "streak_continue": return 1.25
+        elif r == "CHAOTIC":
+            if "zscore" in model_name: return 1.20
+            if "markov" in model_name: return 0.70
+        return 1.0
 
 
 # ============================================================
-# TELEGRAM
+# GRADE CALCULATOR (Step-Independent Evaluation)
 # ============================================================
+class GradeCalculator:
+    def calculate(self, prob, agreement, entropy):
+        prob_score = clamp((prob - 0.5) * 4.0, 0.0, 1.0)
+        agree_score = clamp(agreement, 0.0, 1.0)
+        ent_score = clamp(1.0 - entropy, 0.0, 1.0)
 
-def telegram(text):
-    if not TELEGRAM_TOKEN or not CHAT_ID: return False
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        r = requests.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"},
-                          timeout=REQUEST_TIMEOUT)
-        return r.status_code == 200
-    except Exception as e:
-        log(f"[TG ERROR] {e}")
-        return False
+        score = 0.45 * prob_score + 0.35 * agree_score + 0.20 * ent_score
 
+        if score >= GRADE_A_PLUS: grade = "A+"
+        elif score >= GRADE_A:    grade = "A"
+        elif score >= GRADE_B:    grade = "B"
+        elif score >= 0.44:       grade = "C"
+        else:                     grade = "D"
 
-def signal_text(p):
-    return (f"🎯 <b>HYBRID V8.7</b>\n"
-            f"━━━━━━━━━━━━━━━━\n"
-            f"📅 Target: <code>{p.get('target_period', 'N/A')}</code>\n"
-            f"🎲 Prediction: <b>{p['prediction']}</b>\n"
-            f"📊 Confidence: <b>{p['confidence']:.2%}</b>\n"
-            f"🏷 State: <b>{p['state']}</b>\n"
-            f"🧠 Regime: {p['regime']}")
+        return {"grade": grade, "score": score}
+
+    @staticmethod
+    def passes(grade):
+        order = {"A+": 5, "A": 4, "B": 3, "C": 2, "D": 1}
+        return order.get(grade, 0) >= order.get(MIN_GRADE, 3)
+
+    @staticmethod
+    def emoji(grade):
+        return {"A+": "🔥", "A": "⭐", "B": "✅", "C": "⚠️", "D": "🛑"}.get(grade, "❓")
 
 
 # ============================================================
-# POLLING
+# MAIN AGENT (HYBRID V8.2)
 # ============================================================
+class HybridV8:
+    def __init__(self):
+        global global_agent
+        global_agent = self
 
-def polling_worker(agent):
-    log("[POLLING] Worker STARTED")
-    iteration = 0
-    while True:
-        iteration += 1
+        self.db = DataEngine()
+        res_history, oe_history, num_history = self.db.get_history_all(MAX_HISTORY)
+        self.history_res = deque(res_history, maxlen=MAX_HISTORY)
+        self.history_oe = deque(oe_history, maxlen=MAX_HISTORY)
+        self.history_num = deque(num_history, maxlen=MAX_HISTORY)
+
+        self.regime_detector = RegimeDetector()
+        self.pattern_engine = UniversalPatternEngine()
+        self.tracker = PatternTracker(self.db)
+        self.fusion = EvidenceFusion(self.tracker)
+        self.grader = GradeCalculator()
+
+        self.lock = threading.RLock()
+        self.active_prediction = None
+        self.current_step = 0
+        self.is_paused = False
+
+        self.total_signals = 0
+        self.total_skips = 0
+        self.total_wins = 0
+        self.total_losses = 0
+        self.win_by_step = defaultdict(int)
+
+        self.last_period = "None"
+        self.last_number = None
+        self.last_result = "None"
+        self.last_signal = "None"
+        self.last_dimension = "None"
+        self.last_reason = "None"
+        self.last_prob = 0.0
+        self.last_grade = "None"
+
+        print(f"🚀 HYBRID V8.2 active with {len(self.history_res)} historical records.", flush=True)
+
+    def send_telegram(self, message):
+        if not TELEGRAM_TOKEN or not CHAT_ID: return False
         try:
-            rows = fetch_api()
-            if iteration <= 3:
-                log(f"[POLLING] #{iteration} Got {len(rows)} rows")
-            parsed = []
-            for row in rows:
-                item = parse_row(row)
-                if item:
-                    raw_period, number, result = item
-                    period = apply_offset(raw_period)
-                    parsed.append((period, number, result))
-            try: parsed.sort(key=lambda x: int(x[0]))
-            except: parsed.reverse()
-            new_count = 0
-            for period, number, result in parsed:
-                if agent.db.has_period(period): continue
-                new_count += 1
-                log(f"[SYNC] {period} → {result}")
-                evaluation = agent.evaluate_last(result)
-                if evaluation:
-                    status = "WIN" if evaluation["correct"] else "LOSS"
-                    log(f"[RESULT] {period} {result} {status}")
-                agent.db.save_result(period, number, result)
-                prediction = agent.predict_next(source_period=period)
-                if prediction.get("status") == "OK":
-                    log(f"[SIGNAL] {prediction['prediction']} {prediction['confidence']:.2%} {prediction['state']}")
-                    if prediction["state"] == "LIVE":
-                        telegram(signal_text(prediction))
-            if new_count == 0 and iteration % 30 == 0:
-                log(f"[POLLING] #{iteration} No new periods (history: {len(agent.db.history())})")
-        except Exception as e:
-            log(f"[POLL ERROR] {type(e).__name__}: {e}")
-            log(traceback.format_exc())
-        time.sleep(POLL_SECONDS)
+            r = requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                json={"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"},
+                timeout=10
+            )
+            return r.ok
+        except Exception:
+            return False
+
+    def evaluate_previous(self, actual_res, actual_oe, current_period):
+        if not self.active_prediction:
+            return None
+
+        p = self.active_prediction
+        dim = p["dimension"]
+        predicted = p["prediction"]
+        actual = actual_res if dim == "BIG_SMALL" else actual_oe
+        correct = (predicted == actual)
+        step = p["step"]
+        grade = p.get("grade", "?")
+
+        with self.lock:
+            # Update pattern weights
+            for m in p["models"].values():
+                self.tracker.update(m["name"], m["signal"], actual)
+
+            if correct:
+                self.total_wins += 1
+                self.win_by_step[step] += 1
+                if p.get("db_id"):
+                    self.db.evaluate_prediction(p["db_id"], actual)
+
+                self.current_step = 0
+                emoji = self.grader.emoji(grade)
+                self.send_telegram(
+                    f"✅ <b>WIN</b>\n"
+                    f"🎯 {dim} → {actual} | {emoji} {grade}\n"
+                    f"🔄 Step Reset → <b>Step 1</b>\n"
+                    f"📊 Overall WR: {self.get_wr()*100:.1f}%"
+                )
+            else:
+                self.total_losses += 1
+                if p.get("db_id"):
+                    self.db.evaluate_prediction(p["db_id"], actual)
+                self.current_step += 1
+
+            self.active_prediction = None
+        return correct
+
+    def generate(self, source_period):
+        bs_arr = list(self.history_res)
+        oe_arr = list(self.history_oe)
+        num_arr = list(self.history_num)
+
+        if len(bs_arr) < MIN_HISTORY:
+            return {"signal": None, "reason": "WARMUP"}
+
+        # 1. Evaluate Big / Small
+        regime_bs = self.regime_detector.detect(bs_arr, "Big")
+        models_bs = self.pattern_engine.predict(bs_arr, regime_bs, "Big", "Small", num_arr)
+        fusion_bs = self.fusion.combine(models_bs, regime_bs, "Big", "Small") if models_bs else None
+
+        # 2. Evaluate Odd / Even
+        regime_oe = self.regime_detector.detect(oe_arr, "Odd")
+        models_oe = self.pattern_engine.predict(oe_arr, regime_oe, "Odd", "Even")
+        fusion_oe = self.fusion.combine(models_oe, regime_oe, "Odd", "Even") if models_oe else None
+
+        # Pick Best Dimension based on consensus, edge, and probability
+        candidate = self.select_best_dimension(fusion_bs, regime_bs, fusion_oe, regime_oe)
+        if not candidate:
+            return {"signal": None, "reason": "NO_QUALIFIED_EDGE"}
+
+        dim, fusion, regime = candidate
+
+        # Anti-trap filter
+        if regime.get("is_trap"):
+            return {"signal": None, "reason": "EXTENDED_ALTERNATING_TRAP"}
+
+        prob = fusion["raw_probability"]
+        edge = abs(prob - 0.5)
+
+        # Filters: Consensus eases disagreement penalty
+        disagree_limit = 0.42 if fusion["consensus"] else MAX_MODEL_DISAGREEMENT
+        if fusion["disagreement"] > disagree_limit:
+            return {"signal": None, "reason": "MODEL_DISAGREEMENT"}
+
+        if prob < MIN_SIGNAL_PROB or edge < MIN_EDGE:
+            return {"signal": None, "reason": "LOW_PROBABILITY"}
+
+        # Grade Evaluation
+        grade_res = self.grader.calculate(prob, fusion["agreement"], regime["entropy"])
+        grade = grade_res["grade"]
+
+        if not self.grader.passes(grade):
+            return {"signal": None, "reason": f"LOW_GRADE_{grade}"}
+
+        return {
+            "dimension": dim,
+            "signal": fusion["prediction"],
+            "probability": prob,
+            "edge": edge,
+            "regime": regime["name"],
+            "grade": grade,
+            "grade_score": grade_res["score"],
+            "consensus": fusion["consensus"],
+            "models": fusion["models"],
+            "source_period": str(source_period)
+        }
+
+    def select_best_dimension(self, f_bs, r_bs, f_oe, r_oe):
+        # Rate candidate suitability
+        candidates = []
+        if f_bs and not r_bs.get("is_trap"):
+            score_bs = f_bs["raw_probability"] + (0.05 if f_bs["consensus"] else 0.0)
+            candidates.append(("BIG_SMALL", f_bs, r_bs, score_bs))
+        if f_oe and not r_oe.get("is_trap"):
+            score_oe = f_oe["raw_probability"] + (0.05 if f_oe["consensus"] else 0.0)
+            candidates.append(("ODD_EVEN", f_oe, r_oe, score_oe))
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda x: x[3], reverse=True)
+        best = candidates[0]
+        return best[0], best[1], best[2]
+
+    def analyze_round(self, period, number):
+        res = number_to_result(number)
+        oe = number_to_odd_even(number)
+        if res is None or oe is None: return
+
+        with self.lock:
+            if self.db.has_period(period): return
+
+            self.evaluate_previous(res, oe, str(period))
+            self.db.save_result(period, number, res, oe)
+            self.history_res.append(res)
+            self.history_oe.append(oe)
+            self.history_num.append(int(number))
+
+            self.last_period = str(period)
+            self.last_number = int(number)
+            self.last_result = f"{res} ({oe})"
+
+            if self.is_paused:
+                self.last_signal = "PAUSED"
+                return
+
+            pred = self.generate(period)
+            if pred["signal"] is None:
+                self.total_skips += 1
+                self.last_signal = "SKIP"
+                self.last_reason = pred["reason"]
+                self.send_telegram(f"⏸️ <b>SKIP</b>\n📅 {period}\n📌 {pred['reason']}")
+                return
+
+            self.total_signals += 1
+            target_period = str(int(str(period)) + 1)
+
+            record = {
+                "source_period": str(period),
+                "target_period": target_period,
+                "dimension": pred["dimension"],
+                "prediction": pred["signal"],
+                "probability": pred["probability"],
+                "edge": pred["edge"],
+                "reason": f"CONSENSUS_{pred['consensus']}",
+                "regime": pred["regime"],
+                "grade": pred["grade"],
+                "grade_score": pred["grade_score"],
+                "models": pred["models"]
+            }
+
+            db_id = self.db.save_prediction(record)
+            self.active_prediction = {**record, "db_id": db_id, "step": self.current_step}
+
+            self.last_dimension = pred["dimension"]
+            self.last_signal = pred["signal"]
+            self.last_prob = pred["probability"]
+            self.last_grade = pred["grade"]
+
+            grade_emoji = self.grader.emoji(pred["grade"])
+            dim_tag = "🎯 [BIG/SMALL]" if pred["dimension"] == "BIG_SMALL" else "🎲 [ODD/EVEN]"
+
+            self.send_telegram(
+                f"{dim_tag} <b>{pred['signal'].upper()}</b>\n"
+                f"{grade_emoji} <b>Grade: {pred['grade']}</b> ({pred['grade_score']:.2f})\n\n"
+                f"📅 Period: {period}\n"
+                f"💰 Step {self.current_step + 1} ({2**self.current_step}x)\n"
+                f"📊 Prob: {pred['probability']*100:.1f}% | Edge: {pred['edge']*100:.1f}pp\n"
+                f"🧠 Regime: {pred['regime']} (Consensus: {'✅' if pred['consensus'] else '⚠️'})"
+            )
+
+    def get_wr(self):
+        tot = self.total_wins + self.total_losses
+        return self.total_wins / tot if tot else 0.0
+
+    def dashboard_state(self):
+        return {
+            "version": "HYBRID V8.2",
+            "history": len(self.history_res),
+            "signals": self.total_signals,
+            "skips": self.total_skips,
+            "wins": self.total_wins,
+            "losses": self.total_losses,
+            "wr": self.get_wr(),
+            "step": self.current_step + 1,
+            "paused": self.is_paused,
+            "last_period": self.last_period,
+            "last_result": self.last_result,
+            "last_dimension": self.last_dimension,
+            "last_signal": self.last_signal,
+            "last_prob": self.last_prob,
+            "last_grade": self.last_grade
+        }
 
 
 # ============================================================
-# TELEGRAM COMMANDS
+# TELEGRAM COMMAND LOOP
 # ============================================================
-
-def poll_telegram_commands(agent):
-    if not ALLOW_TELEGRAM_COMMANDS or not TELEGRAM_TOKEN or not CHAT_ID: return
-    log("[TG CMD] Started")
-    try:
-        requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook",
-                     params={"drop_pending_updates": True}, timeout=10)
-    except: pass
+def poll_telegram(agent):
+    if not TELEGRAM_TOKEN or not CHAT_ID: return
     offset = 0
     while True:
         try:
-            r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
-                             params={"offset": offset, "timeout": 20}, timeout=25)
-            if r.status_code != 200:
-                time.sleep(2); continue
-            for u in r.json().get("result", []):
-                offset = u["update_id"] + 1
-                msg = u.get("message") or u.get("edited_message") or {}
-                if str(msg.get("chat", {}).get("id", "")) != str(CHAT_ID): continue
-                txt = str(msg.get("text", "")).strip().lower()
-                if txt == "/status":
-                    rep = agent.db.report()
-                    h = len(agent.db.history())
-                    msg = f"🚀 V8.7\nHistory: {h}"
-                    if rep['wr']:
-                        msg += f"\nPredictions: {rep['total']}\nWR: {rep['wr']*100:.1f}%"
-                    telegram(msg)
-                elif txt == "/help":
-                    telegram("🤖 V8.7 COMMANDS\n/status /help")
-        except Exception as e:
-            log(f"[TG CMD ERR] {e}")
+            r = requests.get(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
+                params={"offset": offset, "timeout": 20}, timeout=25
+            )
+            if r.status_code == 200:
+                for u in r.json().get("result", []):
+                    offset = u["update_id"] + 1
+                    msg = u.get("message") or {}
+                    if str(msg.get("chat", {}).get("id")) != str(CHAT_ID): continue
+                    txt = str(msg.get("text", "")).strip().lower()
+
+                    if txt == "/status":
+                        s = agent.dashboard_state()
+                        agent.send_telegram(
+                            f"🚀 <b>HYBRID V8.2 STATUS</b>\n\n"
+                            f"Mode: {'PAUSED 🛑' if s['paused'] else 'RUNNING 🟢'}\n"
+                            f"WR: <b>{s['wr']*100:.2f}%</b> (W: {s['wins']} | L: {s['losses']})\n"
+                            f"Signals: {s['signals']} | Skips: {s['skips']}\n"
+                            f"Current Step: <b>Step {s['step']}</b>\n"
+                            f"Last: {s['last_dimension']} → {s['last_signal']} ({s['last_grade']})"
+                        )
+                    elif txt == "/pause":
+                        agent.is_paused = True
+                        agent.send_telegram("🛑 Paused")
+                    elif txt == "/resume":
+                        agent.is_paused = False
+                        agent.send_telegram("🟢 Resumed")
+                    elif txt == "/reset":
+                        agent.current_step = 0
+                        agent.send_telegram("🔄 Step Reset → 1")
+        except Exception:
+            pass
         time.sleep(1)
+
+
+# ============================================================
+# API CLIENT & BACKGROUND WORKER
+# ============================================================
+class ResultAPIClient:
+    def __init__(self):
+        self.session = requests.Session()
+
+    def fetch_latest(self):
+        headers = {
+            "accept": "application/json, text/plain, */*",
+            "content-type": "application/json;charset=UTF-8",
+            "user-agent": "Mozilla/5.0",
+        }
+        if API_AUTH: headers["authorization"] = f"Bearer {API_AUTH}"
+        if API_ORIGIN: headers["origin"] = API_ORIGIN
+        if API_REFERER: headers["referer"] = API_REFERER
+
+        payload = {
+            "pageSize": 10, "pageNo": 1, "typeId": API_TYPE_ID,
+            "language": API_LANGUAGE, "timestamp": int(time.time()),
+        }
+        if API_RANDOM: payload["random"] = API_RANDOM
+        if API_SIGNATURE: payload["signature"] = API_SIGNATURE
+
+        r = self.session.post(API_URL, headers=headers, json=payload, timeout=REQUEST_TIMEOUT)
+        r.raise_for_status()
+        items = r.json().get("data", {}).get("list", [])
+        if not items: return None
+        latest = items[0]
+        raw_period = latest.get("issueNumber") or latest.get("period")
+        raw_number = latest.get("number")
+        if raw_period is None or raw_number is None: return None
+        return {"period": str(int(str(raw_period)) + PERIOD_OFFSET), "number": int(raw_number)}
+
+
+def run_bot():
+    print("🚀 Starting HYBRID V8.2...", flush=True)
+    agent = HybridV8()
+    api = ResultAPIClient()
+    threading.Thread(target=poll_telegram, args=(agent,), daemon=True).start()
+
+    last_period = None
+    while True:
+        try:
+            item = api.fetch_latest()
+            if item and item["period"] != last_period:
+                last_period = item["period"]
+                print(f"📡 Sync {item['period']} → {item['number']}", flush=True)
+                agent.analyze_round(item["period"], item["number"])
+        except Exception as e:
+            print(f"⚠️ API Polling error: {e}", flush=True)
+        time.sleep(POLL_SECONDS)
 
 
 # ============================================================
 # DASHBOARD
 # ============================================================
+HTML = r"""
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="10">
+<title>HYBRID V8.2</title>
+<style>
+body { margin:0; background:#0b1020; color:#e9f0ff; font-family:system-ui,Arial,sans-serif; padding:14px; }
+h1 { color:#00ffff; margin-bottom:4px; }
+.card { background:#151d33; border:1px solid #2b3858; border-radius:12px; padding:14px; margin:10px 0; }
+.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; }
+.val { font-size:26px; font-weight:bold; }
+.green { color:#00ff88; } .cyan { color:#00ffff; } .yellow { color:#ffe600; }
+</style>
+</head>
+<body>
+<h1>🚀 HYBRID V8.2 Engine</h1>
+<div>Multi-Dimension (Big/Small & Odd/Even) + Consensus Voting</div>
+{% if agent %}
+<div class="grid">
+  <div class="card"><div>Mode</div><div class="val">{{ "PAUSED 🛑" if agent.is_paused else "RUNNING 🟢" }}</div></div>
+  <div class="card"><div>Win Rate</div><div class="val green">{{ "%.2f"|format(agent.get_wr()*100) }}%</div></div>
+  <div class="card"><div>Signals/Skips</div><div class="val">{{ agent.total_signals }} / {{ agent.total_skips }}</div></div>
+  <div class="card"><div>Current Step</div><div class="val yellow">Step {{ agent.current_step + 1 }}</div></div>
+</div>
+<div class="card">
+  <h2>🎯 Last Signal Summary</h2>
+  <p>Period: <b>{{ agent.last_period }}</b> | Result: <b>{{ agent.last_result }}</b></p>
+  <p>Target: <b class="cyan">{{ agent.last_dimension }}</b> → <b class="green">{{ agent.last_signal }}</b></p>
+  <p>Grade: <b>{{ agent.last_grade }}</b> | Prob: <b>{{ "%.1f"|format(agent.last_prob*100) }}%</b></p>
+</div>
+{% endif %}
+</body>
+</html>
+"""
 
 @app.route("/")
-def dashboard():
-    if not global_agent: return "Initializing..."
-    p = global_agent.last_prediction
-    report = global_agent.db.report()
-    h = len(global_agent.db.history())
-    last_rows = global_agent.db.get_last_rows(40)
-    return render_template_string("""
-<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="refresh" content="15"><title>V8.7</title>
-<style>body{background:#0f172a;color:#f8fafc;font-family:system-ui,Arial;padding:20px;margin:0}
-h1{color:#22d3ee}.card{background:#1e293b;padding:14px;border-radius:10px;margin-bottom:12px}
-.big{font-size:24px;font-weight:800}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
-.mono{font-family:monospace;letter-spacing:2px}
-.green{color:#4ade80}.cyan{color:#22d3ee}.yellow{color:#facc15}
-</style></head><body>
-<h1>🚀 HYBRID V8.7</h1>
-<div class="grid">
-<div class="card"><div>History</div><div class="big yellow">{{ h }}</div></div>
-<div class="card"><div>Evaluated</div><div class="big">{{ report.total }}</div></div>
-<div class="card"><div>WR</div><div class="big green">{{ "%.1f"|format(report.wr*100) if report.wr else "N/A" }}%</div></div>
-<div class="card"><div>LIVE</div><div class="big cyan">{{ report.live_total }}</div></div>
-</div>
-<div class="card">
-<h3>Latest Signal</h3>
-{% if p %}<p><b>{{ p.prediction }}</b> — {{ "%.2f"|format(p.confidence*100) }}% [{{ p.state }}] | {{ p.regime }}</p>
-{% else %}<p>No signal yet (history: {{ h }}, need {{ 35 }})</p>{% endif %}
-</div>
-<div class="card">
-<h3>Last 40 Results</h3>
-<div class="mono">{% for r in last_rows %}{{ "B" if r.result=="Big" else "S" }}{% endfor %}</div>
-</div>
-</body></html>""", p=p, report=report, h=h, last_rows=last_rows)
-
+def home():
+    return render_template_string(HTML, agent=global_agent)
 
 @app.route("/api/status")
 def api_status():
-    if not global_agent: return jsonify({"status": "init"})
-    return jsonify({"prediction": global_agent.last_prediction,
-                    "report": global_agent.db.report(),
-                    "history_count": len(global_agent.db.history())})
-
-
-@app.route("/api/debug")
-def api_debug():
-    if not global_agent: return jsonify({"status": "no_agent"})
-    result = {}
-    try:
-        status_code, raw_text, parsed_json, payload, headers = fetch_api_raw()
-        result["status_code"] = status_code
-        result["raw_text"] = raw_text[:2000]
-        result["payload_sent"] = payload
-        result["headers_sent"] = {k: (v[:30] + "..." if isinstance(v, str) and len(v) > 30 else v) for k, v in headers.items()}
-        if parsed_json and isinstance(parsed_json, dict):
-            result["top_level_keys"] = list(parsed_json.keys())
-            rows = extract_rows(parsed_json)
-            result["extracted_rows_count"] = len(rows)
-            if rows:
-                result["first_row"] = rows[0]
-    except Exception as e:
-        result["error"] = f"{type(e).__name__}: {e}"
-        result["traceback"] = traceback.format_exc()
-    return jsonify({"result": result, "config": {
-        "API_URL": API_URL, "API_TYPE_ID": API_TYPE_ID,
-        "API_PAGE_SIZE": API_PAGE_SIZE, "API_LANGUAGE": API_LANGUAGE,
-        "PERIOD_OFFSET": PERIOD_OFFSET}})
-
-
-# ============================================================
-# MAIN
-# ============================================================
+    if not global_agent: return jsonify({"status": "starting"})
+    return jsonify(global_agent.dashboard_state())
 
 if __name__ == "__main__":
-    log("=" * 60)
-    log(" HYBRID ENGINE V8.7 STARTING")
-    log("=" * 60)
-    log(f"DB: {DB_PATH}")
-    log(f"API: {API_URL}")
-    log(f"API_TYPE_ID: {API_TYPE_ID}")
-    log(f"API_PAGE_SIZE: {API_PAGE_SIZE}")
-    log(f"TELEGRAM_TOKEN set: {bool(TELEGRAM_TOKEN)} (len={len(TELEGRAM_TOKEN)})")
-    log(f"CHAT_ID set: {bool(CHAT_ID)}")
-    log(f"API_AUTH set: {bool(API_AUTH)} (len={len(API_AUTH)})")
-    log(f"API_RANDOM set: {bool(API_RANDOM)}")
-    log(f"API_SIGNATURE set: {bool(API_SIGNATURE)}")
-    log("=" * 60)
-
-    log("[STARTUP] Testing API...")
-    try:
-        status_code, raw_text, parsed, payload, headers = fetch_api_raw()
-        log(f"[STARTUP] status_code: {status_code}")
-        log(f"[STARTUP] payload: {payload}")
-        log(f"[STARTUP] raw (first 500): {raw_text[:500]}")
-        if parsed and isinstance(parsed, dict):
-            log(f"[STARTUP] top keys: {list(parsed.keys())}")
-            rows = extract_rows(parsed)
-            log(f"[STARTUP] extracted rows: {len(rows)}")
-            if rows: log(f"[STARTUP] first row: {rows[0]}")
-    except Exception as e:
-        log(f"[STARTUP ERROR] {type(e).__name__}: {e}")
-        log(traceback.format_exc())
-
-    telegram(f"🚀 V8.7 STARTED\nAPI_TYPE_ID={API_TYPE_ID}\nCheck /api/debug")
-
-    global_agent = HybridEngineV87()
-    threading.Thread(target=polling_worker, args=(global_agent,), daemon=True).start()
-    threading.Thread(target=poll_telegram_commands, args=(global_agent,), daemon=True).start()
-
-    log(f"[STARTUP] Flask on port {PORT}")
+    threading.Thread(target=run_bot, daemon=True).start()
     app.run(host="0.0.0.0", port=PORT, debug=False)
