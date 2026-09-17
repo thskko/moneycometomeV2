@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-HYBRID V8.2 — High Frequency & High Precision Engine
-- Multi-Dimension Signals: Big/Small & Odd/Even dual engine.
-- Dynamic Regime Switching: Adapts weights based on market regimes instead of hard-blocking.
-- Family Consensus (Voting): Statistical, Memory, and Streak families vote; 2/3 agreement passes signals.
-- Independent Step Handling: Constant grade requirements across all steps (No high-step lockout).
+HYBRID V8.2 (Translated Edition)
+- Multi-Dimension Signals: Computes both Big/Small & Odd/Even natively.
+- Contextual Translation Layer: If Odd/Even is triggered, it dynamically translates 
+  the signal into Big/Small based on the recent numeric momentum (e.g. Even -> 6,8=Big / 0,2=Small).
+- Family Consensus (Voting): Statistical, Memory, and Streak families vote.
 - Anti-Trap Engine: Detects extended chop/alternating traps.
 - SQLite Database + Telegram Bot + Flask Realtime Dashboard.
 """
@@ -40,23 +40,24 @@ PERIOD_OFFSET = int(os.getenv("PERIOD_OFFSET", "2"))
 POLL_SECONDS = float(os.getenv("POLL_SECONDS", "2.0"))
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "10"))
 
-DB_PATH = os.getenv("DB_PATH", "hybrid_v8.db")
+DB_PATH = os.getenv("DB_PATH", "hybrid_v8_translated.db")
 MIN_HISTORY = int(os.getenv("MIN_HISTORY", "30"))
 MAX_HISTORY = int(os.getenv("MAX_HISTORY", "1000"))
 
-MIN_SIGNAL_PROB = float(os.getenv("MIN_SIGNAL_PROB", "0.57"))
-MIN_EDGE = float(os.getenv("MIN_EDGE", "0.07"))
-MAX_MODEL_DISAGREEMENT = float(os.getenv("MAX_MODEL_DISAGREEMENT", "0.38"))
+# Quality Filters
+MIN_SIGNAL_PROB = float(os.getenv("MIN_SIGNAL_PROB", "0.58"))
+MIN_EDGE = float(os.getenv("MIN_EDGE", "0.08"))
+MAX_MODEL_DISAGREEMENT = float(os.getenv("MAX_MODEL_DISAGREEMENT", "0.35"))
 MIN_Z_SCORE = float(os.getenv("MIN_Z_SCORE", "1.645"))  # 90% Statistical confidence
 
 CALIBRATION_MIN_SAMPLES = int(os.getenv("CALIBRATION_MIN_SAMPLES", "12"))
 PORT = int(os.getenv("PORT", "8080"))
 
-# Grade Thresholds (Allows Grade B, A, A+ consistently across all steps)
+# Grade Thresholds (Set to A to protect Win Rate, but allows Dual Engine flow)
 GRADE_A_PLUS = float(os.getenv("GRADE_A_PLUS", "0.76"))
 GRADE_A      = float(os.getenv("GRADE_A",      "0.64"))
 GRADE_B      = float(os.getenv("GRADE_B",      "0.53"))
-MIN_GRADE    = os.getenv("MIN_GRADE", "B")  # B, A, A+ all eligible
+MIN_GRADE    = os.getenv("MIN_GRADE", "A")
 
 app = Flask(__name__)
 global_agent = None
@@ -90,17 +91,14 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
 def calculate_z_score(successes, trials, p=0.5):
-    if trials <= 0:
-        return 0.0
+    if trials <= 0: return 0.0
     expected = trials * p
     std_dev = math.sqrt(trials * p * (1.0 - p))
-    if std_dev == 0:
-        return 0.0
+    if std_dev == 0: return 0.0
     return (successes - expected) / std_dev
 
 def entropy_binary(arr, val1):
-    if not arr:
-        return 0.0
+    if not arr: return 0.0
     c = sum(1 for x in arr if x == val1)
     p = c / len(arr)
     q = 1.0 - p
@@ -110,18 +108,15 @@ def entropy_binary(arr, val1):
     return clamp(h, 0.0, 1.0)
 
 def transition_rate(arr):
-    if len(arr) < 2:
-        return 0.0
+    if len(arr) < 2: return 0.0
     return sum(arr[i] != arr[i - 1] for i in range(1, len(arr))) / (len(arr) - 1)
 
 def current_streak(arr):
-    if not arr:
-        return 0, None
+    if not arr: return 0, None
     last = arr[-1]
     count = 0
     for x in reversed(arr):
-        if x != last:
-            break
+        if x != last: break
         count += 1
     return count, last
 
@@ -157,6 +152,7 @@ class DataEngine:
                     target_period TEXT,
                     dimension TEXT,
                     prediction TEXT,
+                    model_prediction TEXT,
                     probability REAL,
                     edge REAL,
                     reason TEXT,
@@ -168,6 +164,12 @@ class DataEngine:
                     correct INTEGER
                 )
             """)
+            # Migration for model_prediction column if DB exists
+            try:
+                cur.execute("ALTER TABLE predictions ADD COLUMN model_prediction TEXT")
+            except sqlite3.OperationalError:
+                pass
+                
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS pattern_stats (
                     name TEXT PRIMARY KEY,
@@ -209,13 +211,13 @@ class DataEngine:
             cur = self.conn.execute("""
                 INSERT INTO predictions (
                     created_at, source_period, target_period, dimension,
-                    prediction, probability, edge, reason, regime, grade, grade_score
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    prediction, model_prediction, probability, edge, reason, regime, grade, grade_score
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 utc_now(), p.get("source_period"), p.get("target_period"),
-                p.get("dimension"), p.get("prediction"), p.get("probability", 0),
-                p.get("edge", 0), p.get("reason", ""), p.get("regime", ""),
-                p.get("grade", ""), p.get("grade_score", 0)
+                p.get("dimension"), p.get("user_prediction"), p.get("model_prediction"),
+                p.get("probability", 0), p.get("edge", 0), p.get("reason", ""),
+                p.get("regime", ""), p.get("grade", ""), p.get("grade_score", 0)
             ))
             self.conn.commit()
             return cur.lastrowid
@@ -225,8 +227,7 @@ class DataEngine:
             row = self.conn.execute(
                 "SELECT prediction FROM predictions WHERE id = ?", (prediction_id,)
             ).fetchone()
-            if not row:
-                return None
+            if not row: return None
             correct = int(row[0] == actual)
             self.conn.execute("""
                 UPDATE predictions SET evaluated = 1, actual = ?, correct = ? WHERE id = ?
@@ -289,7 +290,7 @@ class PatternTracker:
 
 
 # ============================================================
-# REGIME DETECTOR (Anti-Trap Detection)
+# REGIME DETECTOR
 # ============================================================
 class RegimeDetector:
     def detect(self, arr, val1):
@@ -304,7 +305,6 @@ class RegimeDetector:
         streak_len, _ = current_streak(arr)
         bias = recent20.count(val1) / len(recent20)
 
-        # Anti-trap: High alternating cycles >= 7 turns
         if trans8 >= 0.875 and streak_len == 1:
             return {"name": "EXTENDED_ALTERNATING_TRAP", "entropy": ent, "is_trap": True}
 
@@ -318,10 +318,10 @@ class RegimeDetector:
 
 
 # ============================================================
-# UNIVERSAL PATTERN ENGINE (Big/Small & Odd/Even)
+# UNIVERSAL PATTERN ENGINE
 # ============================================================
 class UniversalPatternEngine:
-    def predict(self, arr, regime, v1, v2, nums=None):
+    def predict(self, arr, regime, v1, v2):
         models = {}
         # 1. Statistical Family
         m = self.freq_zscore(arr, v1, v2)
@@ -329,10 +329,6 @@ class UniversalPatternEngine:
 
         m = self.recent_zscore(arr, v1, v2)
         if m: models[m["name"]] = m
-
-        if nums and v1 == "Big":
-            m = self.ma_momentum(nums)
-            if m: models[m["name"]] = m
 
         # 2. Memory / Markov Family
         m = self.markov2(arr, v1, v2)
@@ -361,36 +357,16 @@ class UniversalPatternEngine:
         sub = arr[-24:]
         z = calculate_z_score(sub.count(v1), len(sub), 0.5)
         if abs(z) < MIN_Z_SCORE: return None
-        return {
-            "name": "freq_zscore", "family": "STATISTICAL",
-            "signal": v1 if z > 0 else v2,
-            "probability": clamp(0.50 + abs(z) * 0.08, 0.54, 0.80),
-            "support": len(sub)
-        }
+        return {"name": "freq_zscore", "family": "STATISTICAL", "signal": v1 if z > 0 else v2,
+                "probability": clamp(0.50 + abs(z) * 0.08, 0.54, 0.80), "support": len(sub)}
 
     def recent_zscore(self, arr, v1, v2):
         if len(arr) < 12: return None
         sub = arr[-12:]
         z = calculate_z_score(sub.count(v1), len(sub), 0.5)
         if abs(z) < 1.45: return None
-        return {
-            "name": "recent_zscore", "family": "STATISTICAL",
-            "signal": v1 if z > 0 else v2,
-            "probability": clamp(0.50 + abs(z) * 0.09, 0.52, 0.77),
-            "support": len(sub)
-        }
-
-    def ma_momentum(self, nums):
-        if len(nums) < 12: return None
-        sub = nums[-12:]
-        avg = sum(sub) / len(sub)
-        if avg >= 5.75:
-            return {"name": "ma_momentum", "family": "STATISTICAL", "signal": "Big",
-                    "probability": clamp(0.50 + (avg - 5.0) * 0.18, 0.53, 0.76), "support": 12}
-        elif avg <= 4.25:
-            return {"name": "ma_momentum", "family": "STATISTICAL", "signal": "Small",
-                    "probability": clamp(0.50 + (5.0 - avg) * 0.18, 0.53, 0.76), "support": 12}
-        return None
+        return {"name": "recent_zscore", "family": "STATISTICAL", "signal": v1 if z > 0 else v2,
+                "probability": clamp(0.50 + abs(z) * 0.09, 0.52, 0.77), "support": len(sub)}
 
     def markov2(self, arr, v1, v2):
         if len(arr) < 25: return None
@@ -456,17 +432,15 @@ class UniversalPatternEngine:
 
 
 # ============================================================
-# EVIDENCE FUSION (Dynamic Regime Switching + Family Voting)
+# EVIDENCE FUSION
 # ============================================================
 class EvidenceFusion:
     def __init__(self, tracker):
         self.tracker = tracker
 
     def combine(self, models, regime, v1, v2):
-        if not models:
-            return None
+        if not models: return None
 
-        # Group by families for voting
         family_evidence = defaultdict(lambda: {v1: 0.0, v2: 0.0})
         total_evidence_v1 = 0.0
         total_evidence_v2 = 0.0
@@ -487,22 +461,18 @@ class EvidenceFusion:
                 family_evidence[fam][v2] += signed
                 total_evidence_v2 += signed
 
-        # Determine overall prediction
         net = total_evidence_v1 - total_evidence_v2
         prediction = v1 if net >= 0 else v2
         raw_prob = clamp(0.50 + abs(net) / max(1.0, len(models)), 0.50, 0.95)
 
-        # Family Voting (Consensus Check)
         family_votes = {}
         agreeing_families = 0
         for fam, votes in family_evidence.items():
             fam_winner = v1 if votes[v1] >= votes[v2] else v2
             family_votes[fam] = fam_winner
-            if fam_winner == prediction:
-                agreeing_families += 1
+            if fam_winner == prediction: agreeing_families += 1
 
         consensus = (agreeing_families >= 2)
-
         signals = [m["signal"] for m in models.values()]
         agreement = sum(s == prediction for s in signals) / len(signals)
         disagreement = 1.0 - agreement
@@ -520,7 +490,6 @@ class EvidenceFusion:
     @staticmethod
     def get_regime_multiplier(model_name, regime):
         r = regime["name"]
-        # Dynamic Regime Switching (Specialization multipliers)
         if r == "LONG_STREAK":
             if model_name == "streak_continue": return 1.35
             if model_name == "streak_reversal": return 0.50
@@ -536,7 +505,7 @@ class EvidenceFusion:
 
 
 # ============================================================
-# GRADE CALCULATOR (Step-Independent Evaluation)
+# GRADE CALCULATOR
 # ============================================================
 class GradeCalculator:
     def calculate(self, prob, agreement, entropy):
@@ -557,7 +526,7 @@ class GradeCalculator:
     @staticmethod
     def passes(grade):
         order = {"A+": 5, "A": 4, "B": 3, "C": 2, "D": 1}
-        return order.get(grade, 0) >= order.get(MIN_GRADE, 3)
+        return order.get(grade, 0) >= order.get(MIN_GRADE, 4) # Forces Grade A as minimum threshold
 
     @staticmethod
     def emoji(grade):
@@ -565,7 +534,7 @@ class GradeCalculator:
 
 
 # ============================================================
-# MAIN AGENT (HYBRID V8.2)
+# MAIN AGENT (HYBRID V8.2 Translated Edition)
 # ============================================================
 class HybridV8:
     def __init__(self):
@@ -599,12 +568,11 @@ class HybridV8:
         self.last_number = None
         self.last_result = "None"
         self.last_signal = "None"
-        self.last_dimension = "None"
         self.last_reason = "None"
         self.last_prob = 0.0
         self.last_grade = "None"
 
-        print(f"🚀 HYBRID V8.2 active with {len(self.history_res)} historical records.", flush=True)
+        print(f"🚀 HYBRID V8.2 Translated Edition active with {len(self.history_res)} records.", flush=True)
 
     def send_telegram(self, message):
         if not TELEGRAM_TOKEN or not CHAT_ID: return False
@@ -624,39 +592,49 @@ class HybridV8:
 
         p = self.active_prediction
         dim = p["dimension"]
-        predicted = p["prediction"]
-        actual = actual_res if dim == "BIG_SMALL" else actual_oe
-        correct = (predicted == actual)
+        
+        # model_prediction is what the engine native models guessed (e.g., Odd/Even or Big/Small)
+        # user_prediction is ALWAYS Big/Small (what was shown on Telegram)
+        model_pred = p["model_prediction"]
+        user_pred = p["user_prediction"]
+        
+        actual_model_target = actual_res if dim == "BIG_SMALL" else actual_oe
+        actual_user_target = actual_res
+        
+        model_correct = (model_pred == actual_model_target)
+        user_correct = (user_pred == actual_user_target)
+        
         step = p["step"]
         grade = p.get("grade", "?")
 
         with self.lock:
-            # Update pattern weights
+            # 1. Update pattern tracker based on Native Model Prediction
             for m in p["models"].values():
-                self.tracker.update(m["name"], m["signal"], actual)
+                self.tracker.update(m["name"], m["signal"], actual_model_target)
 
-            if correct:
+            # 2. Update overall win/loss based on User (Translated) Prediction
+            if user_correct:
                 self.total_wins += 1
                 self.win_by_step[step] += 1
                 if p.get("db_id"):
-                    self.db.evaluate_prediction(p["db_id"], actual)
+                    self.db.evaluate_prediction(p["db_id"], actual_user_target)
 
                 self.current_step = 0
                 emoji = self.grader.emoji(grade)
                 self.send_telegram(
                     f"✅ <b>WIN</b>\n"
-                    f"🎯 {dim} → {actual} | {emoji} {grade}\n"
+                    f"🎯 Result: {actual_res} | {emoji} {grade}\n"
                     f"🔄 Step Reset → <b>Step 1</b>\n"
                     f"📊 Overall WR: {self.get_wr()*100:.1f}%"
                 )
             else:
                 self.total_losses += 1
                 if p.get("db_id"):
-                    self.db.evaluate_prediction(p["db_id"], actual)
+                    self.db.evaluate_prediction(p["db_id"], actual_user_target)
                 self.current_step += 1
 
             self.active_prediction = None
-        return correct
+        return user_correct
 
     def generate(self, source_period):
         bs_arr = list(self.history_res)
@@ -668,7 +646,7 @@ class HybridV8:
 
         # 1. Evaluate Big / Small
         regime_bs = self.regime_detector.detect(bs_arr, "Big")
-        models_bs = self.pattern_engine.predict(bs_arr, regime_bs, "Big", "Small", num_arr)
+        models_bs = self.pattern_engine.predict(bs_arr, regime_bs, "Big", "Small")
         fusion_bs = self.fusion.combine(models_bs, regime_bs, "Big", "Small") if models_bs else None
 
         # 2. Evaluate Odd / Even
@@ -705,9 +683,30 @@ class HybridV8:
         if not self.grader.passes(grade):
             return {"signal": None, "reason": f"LOW_GRADE_{grade}"}
 
+        # =========================================================
+        # CONTEXTUAL TRANSLATION LAYER (ODD/EVEN -> BIG/SMALL)
+        # =========================================================
+        model_prediction = fusion["prediction"]
+        user_prediction = model_prediction
+
+        if dim == "ODD_EVEN":
+            # Find recent numbers that match the predicted parity (Odd or Even)
+            recent_matches = [n for n in num_arr[-20:] if number_to_odd_even(n) == model_prediction]
+            
+            if recent_matches:
+                # E.g., if predicted "Even", and recent evens were 6, 8, 6 (Big) vs 2 (Small) -> Output Big
+                big_count = sum(1 for n in recent_matches if n >= 5)
+                small_count = sum(1 for n in recent_matches if n <= 4)
+                user_prediction = "Big" if big_count >= small_count else "Small"
+            else:
+                # Fallback to general moving average
+                ma = sum(num_arr[-10:]) / 10.0 if num_arr else 4.5
+                user_prediction = "Big" if ma >= 4.5 else "Small"
+
         return {
             "dimension": dim,
-            "signal": fusion["prediction"],
+            "model_prediction": model_prediction,
+            "user_prediction": user_prediction,
             "probability": prob,
             "edge": edge,
             "regime": regime["name"],
@@ -771,7 +770,8 @@ class HybridV8:
                 "source_period": str(period),
                 "target_period": target_period,
                 "dimension": pred["dimension"],
-                "prediction": pred["signal"],
+                "model_prediction": pred["model_prediction"],
+                "user_prediction": pred["user_prediction"],
                 "probability": pred["probability"],
                 "edge": pred["edge"],
                 "reason": f"CONSENSUS_{pred['consensus']}",
@@ -785,16 +785,18 @@ class HybridV8:
             self.active_prediction = {**record, "db_id": db_id, "step": self.current_step}
 
             self.last_dimension = pred["dimension"]
-            self.last_signal = pred["signal"]
+            self.last_signal = pred["user_prediction"]
             self.last_prob = pred["probability"]
             self.last_grade = pred["grade"]
 
             grade_emoji = self.grader.emoji(pred["grade"])
-            dim_tag = "🎯 [BIG/SMALL]" if pred["dimension"] == "BIG_SMALL" else "🎲 [ODD/EVEN]"
+            
+            # Indicate translation in telegram if applicable
+            extra_note = f"\n💡 <i>Derived from Engine: {pred['model_prediction']}</i>" if pred['dimension'] == "ODD_EVEN" else ""
 
             self.send_telegram(
-                f"{dim_tag} <b>{pred['signal'].upper()}</b>\n"
-                f"{grade_emoji} <b>Grade: {pred['grade']}</b> ({pred['grade_score']:.2f})\n\n"
+                f"🎯 <b>{pred['user_prediction'].upper()}</b>\n"
+                f"{grade_emoji} <b>Grade: {pred['grade']}</b> ({pred['grade_score']:.2f}){extra_note}\n\n"
                 f"📅 Period: {period}\n"
                 f"💰 Step {self.current_step + 1} ({2**self.current_step}x)\n"
                 f"📊 Prob: {pred['probability']*100:.1f}% | Edge: {pred['edge']*100:.1f}pp\n"
@@ -807,7 +809,7 @@ class HybridV8:
 
     def dashboard_state(self):
         return {
-            "version": "HYBRID V8.2",
+            "version": "HYBRID V8.2 Translated",
             "history": len(self.history_res),
             "signals": self.total_signals,
             "skips": self.total_skips,
@@ -847,12 +849,12 @@ def poll_telegram(agent):
                     if txt == "/status":
                         s = agent.dashboard_state()
                         agent.send_telegram(
-                            f"🚀 <b>HYBRID V8.2 STATUS</b>\n\n"
+                            f"🚀 <b>HYBRID V8.2 (Translated)</b>\n\n"
                             f"Mode: {'PAUSED 🛑' if s['paused'] else 'RUNNING 🟢'}\n"
                             f"WR: <b>{s['wr']*100:.2f}%</b> (W: {s['wins']} | L: {s['losses']})\n"
                             f"Signals: {s['signals']} | Skips: {s['skips']}\n"
                             f"Current Step: <b>Step {s['step']}</b>\n"
-                            f"Last: {s['last_dimension']} → {s['last_signal']} ({s['last_grade']})"
+                            f"Last: {s['last_signal']} ({s['last_grade']})"
                         )
                     elif txt == "/pause":
                         agent.is_paused = True
@@ -904,7 +906,7 @@ class ResultAPIClient:
 
 
 def run_bot():
-    print("🚀 Starting HYBRID V8.2...", flush=True)
+    print("🚀 Starting HYBRID V8.2 (Translated Edition)...", flush=True)
     agent = HybridV8()
     api = ResultAPIClient()
     threading.Thread(target=poll_telegram, args=(agent,), daemon=True).start()
@@ -932,7 +934,7 @@ HTML = r"""
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="refresh" content="10">
-<title>HYBRID V8.2</title>
+<title>HYBRID V8.2 Translated</title>
 <style>
 body { margin:0; background:#0b1020; color:#e9f0ff; font-family:system-ui,Arial,sans-serif; padding:14px; }
 h1 { color:#00ffff; margin-bottom:4px; }
@@ -943,8 +945,8 @@ h1 { color:#00ffff; margin-bottom:4px; }
 </style>
 </head>
 <body>
-<h1>🚀 HYBRID V8.2 Engine</h1>
-<div>Multi-Dimension (Big/Small & Odd/Even) + Consensus Voting</div>
+<h1>🚀 HYBRID V8.2 Translated</h1>
+<div>Strict Big/Small Bet Targeting with Contextual O/E Translation</div>
 {% if agent %}
 <div class="grid">
   <div class="card"><div>Mode</div><div class="val">{{ "PAUSED 🛑" if agent.is_paused else "RUNNING 🟢" }}</div></div>
@@ -955,7 +957,7 @@ h1 { color:#00ffff; margin-bottom:4px; }
 <div class="card">
   <h2>🎯 Last Signal Summary</h2>
   <p>Period: <b>{{ agent.last_period }}</b> | Result: <b>{{ agent.last_result }}</b></p>
-  <p>Target: <b class="cyan">{{ agent.last_dimension }}</b> → <b class="green">{{ agent.last_signal }}</b></p>
+  <p>Target: <b class="cyan">{{ agent.last_dimension }}</b> → User Bet: <b class="green">{{ agent.last_signal }}</b></p>
   <p>Grade: <b>{{ agent.last_grade }}</b> | Prob: <b>{{ "%.1f"|format(agent.last_prob*100) }}%</b></p>
 </div>
 {% endif %}
