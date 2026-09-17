@@ -18,9 +18,6 @@ CHAT_ID = "-1004402480797"
 SUPABASE_URL = "https://msgzacekhrvlqkqgjvly.supabase.co"
 SUPABASE_KEY = "sb_publishable_bVJj1lqSAsIQ1kQ8Ae2vAQ_o3yCjDeA"
 
-# ==========================================
-# 🧠 CONFIGURATION
-# ==========================================
 CONFIG = {
     "q_lr": 0.45,
     "q_discount": 0.95,
@@ -398,17 +395,27 @@ class AdvancedAdaptiveEngine:
         return arr[-1]
 
     def streak_predict(self, lst):
+        """✅ FIXED: Encode strings to 0/1 before numeric operations."""
         arr = list(lst)
         if len(arr) < 5:
             return "Big"
+
+        # ✅ Encode strings to numbers
+        encoded = [FeatureEngineer.encode(r) for r in arr]
+
+        # Streak count (using encoded)
         streak_count = 1
-        for i in range(len(arr) - 2, -1, -1):
-            if arr[i] == arr[-1]:
+        for i in range(len(encoded) - 2, -1, -1):
+            if encoded[i] == encoded[-1]:
                 streak_count += 1
             else:
                 break
-        mom3 = sum(arr[-3:]) / 3.0
-        mom5 = sum(arr[-5:]) / 5.0
+
+        # ✅ Momentum using encoded (numbers)
+        mom3 = sum(encoded[-3:]) / 3.0
+        mom5 = sum(encoded[-5:]) / 5.0
+
+        # Prediction (return original string)
         if streak_count >= 4:
             return "Small" if arr[-1] == "Big" else "Big"
         elif streak_count >= 3 and abs(mom3 - mom5) > 0.4:
@@ -600,11 +607,9 @@ class AdvancedAdaptiveEngine:
         return rolling_acc >= CONFIG['min_rolling_accuracy']
 
     def update_bankroll(self, won):
-        print("DEBUG update_bankroll: ENTER", flush=True)
         self._force_types()
         multiplier = 2 ** max(0, self.current_step - 1)
         multiplier = float(multiplier)
-        print(f"DEBUG update_bankroll: multiplier={multiplier} ({type(multiplier).__name__})", flush=True)
         if won:
             profit = float(self.current_bet) * multiplier * 0.9
             self.bankroll = float(self.bankroll) + float(profit)
@@ -636,7 +641,6 @@ class AdvancedAdaptiveEngine:
                 self.kelly_bet = float(CONFIG['base_bet']) * float(kelly) * float(CONFIG['kelly_fraction'])
             else:
                 self.kelly_bet = float(CONFIG['base_bet'])
-        print("DEBUG update_bankroll: EXIT", flush=True)
 
     def get_bet_size(self):
         self._force_types()
@@ -645,74 +649,36 @@ class AdvancedAdaptiveEngine:
         return float(self.current_bet) * float(2 ** max(0, int(self.current_step) - 1))
 
     def process_api_result(self, api_period, api_result):
-        print("=" * 60, flush=True)
-        print("DEBUG process_api_result: ENTER", flush=True)
         with self.lock:
-            print("DEBUG process_api_result: Lock acquired", flush=True)
             self._process_api_result_internal(api_period, api_result)
-            print("DEBUG process_api_result: _internal returned", flush=True)
-        print("DEBUG process_api_result: Lock released", flush=True)
-        print("=" * 60, flush=True)
 
     def _process_api_result_internal(self, api_period, api_result):
-        """Internal method — with STEP-BY-STEP DEBUG."""
-        print("DEBUG _internal: STEP 0 — ENTER", flush=True)
-        
-        # FORCE ALL TYPES
         self._force_types()
-        print("DEBUG _internal: STEP 0.1 — After _force_types", flush=True)
-
-        # Period conversion
         self.last_api_period = str(api_period)
         try:
             api_period_int = int(api_period)
         except (ValueError, TypeError):
-            print(f"DEBUG _internal: Invalid period {api_period}", flush=True)
+            print(f"Invalid period: {api_period}", flush=True)
             return
-        print(f"DEBUG _internal: STEP 0.2 — api_period_int={api_period_int}", flush=True)
-
         if self.is_paused:
-            print("DEBUG _internal: is_paused=True, returning", flush=True)
             return
-        print("DEBUG _internal: STEP 0.3 — Not paused", flush=True)
-
         notifications = []
-
-        # ==========================================
-        # Step 1: Previous Prediction
-        # ==========================================
-        print("DEBUG _internal: STEP 1 — Checking active_prediction", flush=True)
         if self.active_prediction is not None and self.last_state is not None:
-            print("DEBUG _internal: STEP 1.1 — Entering Step 1 block", flush=True)
             predicted = self.active_prediction
             is_correct = (predicted.lower() == api_result.lower())
-            print(f"DEBUG _internal: STEP 1.2 — predicted={predicted}, actual={api_result}, correct={is_correct}", flush=True)
-
             self.prediction_history.append(1 if is_correct else 0)
-            print("DEBUG _internal: STEP 1.3 — After prediction_history.append", flush=True)
-
             if int(self.current_step) == 1:
                 reward = 5.0 if is_correct else -5.0
             elif is_correct:
                 reward = 4.0
             else:
                 reward = -4.5 - (float(self.current_step) * 0.5)
-            print(f"DEBUG _internal: STEP 1.4 — reward={reward}", flush=True)
-
             self.update_q_table(self.last_state, predicted, reward)
-            print("DEBUG _internal: STEP 1.5 — After update_q_table", flush=True)
-
             self.update_model_weights(api_result)
-            print("DEBUG _internal: STEP 1.6 — After update_model_weights", flush=True)
-
             if self.last_feature_vector is not None:
                 self.lr_train_X.append(self.last_feature_vector)
                 self.lr_train_y.append([FeatureEngineer.encode(api_result)])
-            print("DEBUG _internal: STEP 1.7 — After LR training data", flush=True)
-
             self.update_bankroll(is_correct)
-            print("DEBUG _internal: STEP 1.8 — After update_bankroll", flush=True)
-
             if is_correct:
                 self.total_wins = int(self.total_wins) + 1
                 self.current_step = 1
@@ -722,64 +688,36 @@ class AdvancedAdaptiveEngine:
             else:
                 self.total_losses = int(self.total_losses) + 1
                 self.current_step = int(self.current_step) + 1
-            print(f"DEBUG _internal: STEP 1.9 — current_step={self.current_step}", flush=True)
-
             if is_correct:
                 notifications.append("🔥🔥🔥 WIN 🔥🔥🔥")
-
             self.active_prediction = None
             self.last_state = None
             self.update_epsilon()
-            print("DEBUG _internal: STEP 1.10 — Step 1 complete", flush=True)
-        else:
-            print("DEBUG _internal: STEP 1 — Skipped (no active_prediction)", flush=True)
-
-        # ==========================================
-        # Step 2: Window append
-        # ==========================================
-        print("DEBUG _internal: STEP 2 — Before window.append", flush=True)
         self.window.append(api_result)
-        print("DEBUG _internal: STEP 2.1 — After window.append", flush=True)
-
         if len(self.window) > 0:
             features, _ = FeatureEngineer.extract(list(self.window))
             self.last_feature_vector = FeatureEngineer.to_vector(features)
-        print("DEBUG _internal: STEP 2.2 — After feature extraction", flush=True)
-
-        # ==========================================
-        # Step 3: Signal
-        # ==========================================
-        print("DEBUG _internal: STEP 3 — Before next_period", flush=True)
         next_period = str(api_period_int + 1)
         self.next_signal_period = next_period
-        print(f"DEBUG _internal: STEP 3.1 — next_period={next_period}", flush=True)
-
         if len(self.window) < CONFIG['min_data_before_signal']:
-            print(f"DEBUG _internal: STEP 3.2 — Collecting ({len(self.window)}/{CONFIG['min_data_before_signal']})", flush=True)
             notifications.append(
                 f"💖Period {next_period}\n"
                 f"⏳ Collecting... {len(self.window)}/{CONFIG['min_data_before_signal']}"
             )
         elif not self.should_trade():
-            print("DEBUG _internal: STEP 3.2 — should_trade=False", flush=True)
             notifications.append(
                 f"💖Period {next_period}\n"
                 f"⏸️ Paused (Acc: {self.get_rolling_accuracy():.0%})"
             )
         else:
-            print("DEBUG _internal: STEP 3.3 — Before get_consensus", flush=True)
             prediction, regime, confidence = self.get_consensus(list(self.window))
-            print(f"DEBUG _internal: STEP 3.4 — After get_consensus: pred={prediction}, conf={confidence}", flush=True)
-
             if confidence < CONFIG['min_confidence_for_trade']:
-                print("DEBUG _internal: STEP 3.5 — SKIP (low confidence)", flush=True)
                 notifications.append(
                     f"💖Period {next_period}\n"
                     f"⏭️ SKIP (Conf: {confidence:.1%})"
                 )
                 self.active_prediction = None
             else:
-                print("DEBUG _internal: STEP 3.6 — SIGNAL generated", flush=True)
                 self.last_state = self.get_state_key()
                 self.active_prediction = prediction
                 self.total_signals = int(self.total_signals) + 1
@@ -790,11 +728,8 @@ class AdvancedAdaptiveEngine:
                     f"💰 Step {int(self.current_step)}x\n"
                     f"📈 Win Rate: {self.get_rolling_accuracy():.0%}"
                 )
-
-        print(f"DEBUG _internal: STEP 4 — Sending {len(notifications)} notifications", flush=True)
         for msg in notifications:
             self.send_telegram(msg)
-        print("DEBUG _internal: STEP 5 — DONE", flush=True)
 
 
 def poll_telegram(agent):
@@ -856,7 +791,7 @@ def poll_telegram(agent):
 
 
 def run_bot():
-    print("🤖 Bot Started (Step-by-Step Debug)", flush=True)
+    print("🤖 Bot Started (streak_predict FIXED)", flush=True)
     agent = AdvancedAdaptiveEngine()
     threading.Thread(target=poll_telegram, args=(agent,), daemon=True).start()
     last_processed_period = None
@@ -904,11 +839,8 @@ def run_bot():
                 last_processed_period = raw_period
                 print(f"📥 API: Period {raw_period} → {api_result}", flush=True)
                 agent.process_api_result(raw_period, api_result)
-                print(f"✅ process_api_result returned for Period {raw_period}", flush=True)
         except Exception as e:
             print(f"Main Loop Error: {e}", flush=True)
-            import traceback
-            traceback.print_exc()
         time.sleep(2)
 
 threading.Thread(target=run_bot, daemon=True).start()
