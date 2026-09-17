@@ -28,7 +28,7 @@ CONFIG = {
     "q_epsilon_decay": 0.999,
     "q_min_epsilon": 0.02,
     "max_martingale_step": 999,
-    "base_bet": 1,
+    "base_bet": 1.0,
     "stop_loss_pct": 0.30,
     "take_profit_pct": 0.50,
     "use_kelly": True,
@@ -63,8 +63,11 @@ def home():
     if not global_agent:
         return "<h3>🤖 Bot is starting...</h3>"
 
-    total = global_agent.total_wins + global_agent.total_losses
-    wr = (global_agent.total_wins / total * 100) if total > 0 else 0.0
+    try:
+        total = int(global_agent.total_wins) + int(global_agent.total_losses)
+        wr = (int(global_agent.total_wins) / total * 100) if total > 0 else 0.0
+    except:
+        wr = 0.0
 
     return f"""
     <h2>📊 WINGO BOT REPORT</h2>
@@ -74,12 +77,8 @@ def home():
     <p><b>Total Signals:</b> {global_agent.total_signals}</p>
     <p><b>Wins:</b> {global_agent.total_wins} | <b>Losses:</b> {global_agent.total_losses}</p>
     <p><b>Win Rate:</b> {wr:.2f}%</p>
-    <p><b>Current Step:</b> Step {global_agent.current_step} ({global_agent.get_current_multiplier()}x)</p>
-    <p><b>Bankroll:</b> {global_agent.bankroll:.2f}</p>
-    <p><b>Max Drawdown:</b> {global_agent.max_drawdown:.1%}</p>
-    <p><b>Rolling Accuracy:</b> {global_agent.get_rolling_accuracy():.2%}</p>
-    <p><b>Market Regime:</b> {global_agent.regime}</p>
-    <p><b>Window Size:</b> {len(global_agent.window)}/{CONFIG['window_size']}</p>
+    <p><b>Current Step:</b> Step {global_agent.current_step}</p>
+    <p><b>Bankroll:</b> {global_agent.bankroll}</p>
     """
 
 
@@ -263,7 +262,7 @@ class AdvancedAdaptiveEngine:
         self.q_lr = CONFIG['q_lr']
         self.q_discount = CONFIG['q_discount']
         self.epsilon = CONFIG['q_epsilon']
-        self.q_table = self.load_q_table()
+        self.q_table = {}
 
         self.lr_model = LogisticRegression(input_size=16, lr=CONFIG['lr_lr'])
         self.lr_train_X = deque(maxlen=200)
@@ -297,19 +296,82 @@ class AdvancedAdaptiveEngine:
         self.last_signal_direction = None
         self.regime = "unknown"
 
+    def _force_types(self):
+        """Force all numeric variables to correct types."""
+        try:
+            self.current_step = int(self.current_step)
+        except (ValueError, TypeError):
+            self.current_step = 1
+
+        try:
+            self.bankroll = float(self.bankroll)
+        except (ValueError, TypeError):
+            self.bankroll = 1000.0
+
+        try:
+            self.peak_bankroll = float(self.peak_bankroll)
+        except (ValueError, TypeError):
+            self.peak_bankroll = 1000.0
+
+        try:
+            self.current_bet = float(self.current_bet)
+        except (ValueError, TypeError):
+            self.current_bet = float(CONFIG['base_bet'])
+
+        try:
+            self.kelly_bet = float(self.kelly_bet)
+        except (ValueError, TypeError):
+            self.kelly_bet = float(CONFIG['base_bet'])
+
+        try:
+            self.total_profit = float(self.total_profit)
+        except (ValueError, TypeError):
+            self.total_profit = 0.0
+
+        try:
+            self.max_drawdown = float(self.max_drawdown)
+        except (ValueError, TypeError):
+            self.max_drawdown = 0.0
+
+        try:
+            self.total_signals = int(self.total_signals)
+        except (ValueError, TypeError):
+            self.total_signals = 0
+
+        try:
+            self.total_wins = int(self.total_wins)
+        except (ValueError, TypeError):
+            self.total_wins = 0
+
+        try:
+            self.total_losses = int(self.total_losses)
+        except (ValueError, TypeError):
+            self.total_losses = 0
+
+        try:
+            self.consecutive_wins = int(self.consecutive_wins)
+        except (ValueError, TypeError):
+            self.consecutive_wins = 0
+
+        try:
+            self.consecutive_losses = int(self.consecutive_losses)
+        except (ValueError, TypeError):
+            self.consecutive_losses = 0
+
+        try:
+            self.paroli_counter = int(self.paroli_counter)
+        except (ValueError, TypeError):
+            self.paroli_counter = 0
+
+        try:
+            self.trend_confirmations = int(self.trend_confirmations)
+        except (ValueError, TypeError):
+            self.trend_confirmations = 0
+
     def get_current_multiplier(self):
+        self._force_types()
         return 2 ** max(0, self.current_step - 1)
 
-    # ---------- Supabase (DISABLED — DNS error fix) ----------
-    def load_q_table(self):
-        """Q-Table loading disabled — in-memory only."""
-        return {}
-
-    def save_q_table(self, state, actions):
-        """Q-Table saving disabled — in-memory only."""
-        pass
-
-    # ---------- Telegram ----------
     def send_telegram(self, message):
         def _send():
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -324,7 +386,6 @@ class AdvancedAdaptiveEngine:
                 print(f"TG Error: {e}", flush=True)
         threading.Thread(target=_send, daemon=True).start()
 
-    # ---------- Q-Learning ----------
     def get_state_key(self, window=None):
         if window is None:
             window = self.window
@@ -352,7 +413,6 @@ class AdvancedAdaptiveEngine:
     def update_epsilon(self):
         self.epsilon = max(CONFIG['q_min_epsilon'], self.epsilon * CONFIG['q_epsilon_decay'])
 
-    # ---------- Prediction Models ----------
     def markov_predict(self, lst):
         if len(lst) < 4:
             return "Big"
@@ -602,34 +662,35 @@ class AdvancedAdaptiveEngine:
         rolling_acc = self.get_rolling_accuracy()
         return rolling_acc >= CONFIG['min_rolling_accuracy']
 
-    # ---------- Bankroll ----------
     def update_bankroll(self, won):
+        self._force_types()
         multiplier = 2 ** max(0, self.current_step - 1)
+        multiplier = float(multiplier)
 
         if won:
-            profit = self.current_bet * multiplier * 0.9
-            self.bankroll += profit
-            self.total_profit += profit
-            self.consecutive_wins += 1
+            profit = float(self.current_bet) * multiplier * 0.9
+            self.bankroll = float(self.bankroll) + float(profit)
+            self.total_profit = float(self.total_profit) + float(profit)
+            self.consecutive_wins = int(self.consecutive_wins) + 1
             self.consecutive_losses = 0
         else:
-            loss = self.current_bet * multiplier
-            self.bankroll -= loss
-            self.consecutive_losses += 1
+            loss = float(self.current_bet) * multiplier
+            self.bankroll = float(self.bankroll) - float(loss)
+            self.consecutive_losses = int(self.consecutive_losses) + 1
             self.consecutive_wins = 0
 
-        if self.bankroll > self.peak_bankroll:
-            self.peak_bankroll = self.bankroll
+        if float(self.bankroll) > float(self.peak_bankroll):
+            self.peak_bankroll = float(self.bankroll)
 
-        dd = (self.peak_bankroll - self.bankroll) / max(self.peak_bankroll, 1)
-        self.max_drawdown = max(self.max_drawdown, dd)
+        dd = (float(self.peak_bankroll) - float(self.bankroll)) / max(float(self.peak_bankroll), 1.0)
+        self.max_drawdown = max(float(self.max_drawdown), float(dd))
 
-        if dd >= CONFIG['stop_loss_pct']:
+        if float(dd) >= float(CONFIG['stop_loss_pct']):
             self.is_paused = True
 
-        if self.consecutive_wins >= CONFIG['anti_martingale_after_win']:
+        if int(self.consecutive_wins) >= int(CONFIG['anti_martingale_after_win']):
             self.use_paroli = True
-            self.paroli_counter = self.consecutive_wins
+            self.paroli_counter = int(self.consecutive_wins)
         else:
             self.use_paroli = False
 
@@ -638,59 +699,29 @@ class AdvancedAdaptiveEngine:
             if wr > 0.5:
                 b = 1.9
                 kelly = (b * wr - (1 - wr)) / b
-                kelly = max(0, min(kelly, 0.5))
-                self.kelly_bet = CONFIG['base_bet'] * kelly * CONFIG['kelly_fraction']
+                kelly = max(0.0, min(kelly, 0.5))
+                self.kelly_bet = float(CONFIG['base_bet']) * float(kelly) * float(CONFIG['kelly_fraction'])
             else:
-                self.kelly_bet = CONFIG['base_bet']
+                self.kelly_bet = float(CONFIG['base_bet'])
 
     def get_bet_size(self):
+        self._force_types()
         if self.use_paroli:
-            return self.current_bet * (2 ** max(0, self.paroli_counter - CONFIG['anti_martingale_after_win']))
-        return self.current_bet * (2 ** max(0, self.current_step - 1))
+            return float(self.current_bet) * float(2 ** max(0, int(self.paroli_counter) - int(CONFIG['anti_martingale_after_win'])))
+        return float(self.current_bet) * float(2 ** max(0, int(self.current_step) - 1))
 
-    # ==========================================
-    # 🎯 MAIN LOGIC — WITH TYPE FIX
-    # ==========================================
     def process_api_result(self, api_period, api_result):
         with self.lock:
             self._process_api_result_internal(api_period, api_result)
 
     def _process_api_result_internal(self, api_period, api_result):
-        """Internal method — with TYPE SAFETY FIX."""
-        
+        """Internal method — with FORCE TYPE fix."""
         # ==========================================
-        # ✅ FIX: Force correct types
+        # FORCE ALL TYPES
         # ==========================================
-        try:
-            self.current_step = int(self.current_step)
-        except (ValueError, TypeError):
-            self.current_step = 1
-        
-        try:
-            self.bankroll = float(self.bankroll)
-        except (ValueError, TypeError):
-            self.bankroll = 1000.0
-        
-        try:
-            self.current_bet = float(self.current_bet)
-        except (ValueError, TypeError):
-            self.current_bet = CONFIG['base_bet']
-        
-        try:
-            self.peak_bankroll = float(self.peak_bankroll)
-        except (ValueError, TypeError):
-            self.peak_bankroll = 1000.0
-        
-        try:
-            self.total_signals = int(self.total_signals)
-            self.total_wins = int(self.total_wins)
-            self.total_losses = int(self.total_losses)
-        except (ValueError, TypeError):
-            pass
-        
-        # ==========================================
+        self._force_types()
+
         # Period conversion
-        # ==========================================
         self.last_api_period = str(api_period)
         try:
             api_period_int = int(api_period)
@@ -703,21 +734,19 @@ class AdvancedAdaptiveEngine:
 
         notifications = []
 
-        # ==========================================
         # Step 1: Previous Prediction ကို စစ်
-        # ==========================================
         if self.active_prediction is not None and self.last_state is not None:
             predicted = self.active_prediction
             is_correct = (predicted.lower() == api_result.lower())
 
             self.prediction_history.append(1 if is_correct else 0)
 
-            if self.current_step == 1:
+            if int(self.current_step) == 1:
                 reward = 5.0 if is_correct else -5.0
             elif is_correct:
                 reward = 4.0
             else:
-                reward = -4.5 - (self.current_step * 0.5)
+                reward = -4.5 - (float(self.current_step) * 0.5)
             self.update_q_table(self.last_state, predicted, reward)
 
             self.update_model_weights(api_result)
@@ -729,14 +758,14 @@ class AdvancedAdaptiveEngine:
             self.update_bankroll(is_correct)
 
             if is_correct:
-                self.total_wins += 1
+                self.total_wins = int(self.total_wins) + 1
                 self.current_step = 1
-                self.current_bet = CONFIG['base_bet']
+                self.current_bet = float(CONFIG['base_bet'])
                 if self.use_paroli:
-                    self.paroli_counter += 1
+                    self.paroli_counter = int(self.paroli_counter) + 1
             else:
-                self.total_losses += 1
-                self.current_step += 1
+                self.total_losses = int(self.total_losses) + 1
+                self.current_step = int(self.current_step) + 1
 
             if is_correct:
                 notifications.append("🔥🔥🔥 WIN 🔥🔥🔥")
@@ -745,18 +774,14 @@ class AdvancedAdaptiveEngine:
             self.last_state = None
             self.update_epsilon()
 
-        # ==========================================
         # Step 2: Window ထဲ api_result ထည့်
-        # ==========================================
         self.window.append(api_result)
 
         if len(self.window) > 0:
             features, _ = FeatureEngineer.extract(list(self.window))
             self.last_feature_vector = FeatureEngineer.to_vector(features)
 
-        # ==========================================
         # Step 3: Next Round အတွက် Signal
-        # ==========================================
         next_period = str(api_period_int + 1)
         self.next_signal_period = next_period
 
@@ -782,22 +807,19 @@ class AdvancedAdaptiveEngine:
             else:
                 self.last_state = self.get_state_key()
                 self.active_prediction = prediction
-                self.total_signals += 1
+                self.total_signals = int(self.total_signals) + 1
 
                 notifications.append(
                     f"💖Period {next_period}\n"
                     f"🎯 SIGNAL → {prediction.capitalize()}\n"
                     f"📊 Confidence: {confidence:.1%}\n"
-                    f"💰 Step {self.current_step}x\n"
+                    f"💰 Step {int(self.current_step)}x\n"
                     f"📈 Win Rate: {self.get_rolling_accuracy():.0%}"
                 )
 
         for msg in notifications:
             self.send_telegram(msg)
 
-    # ==========================================
-    # 🔬 BACKTEST
-    # ==========================================
     def run_backtest(self, historical_results):
         if len(historical_results) < CONFIG['window_size'] + 20:
             return {"win_rate": 0, "total": 0, "wins": 0, "losses": 0}
@@ -976,14 +998,14 @@ def poll_telegram(agent):
 # 🤖 MAIN LOOP
 # ==========================================
 def run_bot():
-    print("🤖 Bot Started (Type Error Fixed)", flush=True)
+    print("🤖 Bot Started (Force Type Fix)", flush=True)
     agent = AdvancedAdaptiveEngine()
 
     threading.Thread(target=poll_telegram, args=(agent,), daemon=True).start()
 
     last_processed_period = None
     url = CONFIG['api_url']
-    auth = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOiIxNzg3OTgxNTA5IiwibmJmIjoiMTc4Nzk4MTUwOSIsImV4cCI6IjE3ODc5ODMzMDkiLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL2V4cGlyYXRpb24iOiI4LzI5LzIwMjYgMTI6MzE2NDkgUE0iLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL3JvbGUiOiJBY2Nlc3NfVG9rZW4iLCJVc2VySWQiOiIxMDEyMjEzIiwiVXNlck5hbWUiOiI5NTk3NDA5MzkzNzAiLCJVc2VyUGhvdG8iOiI5IiwiTmlja05hbWUiOiJUaetsR3lpIiwiQW1vdW50IjoiODcuMzAiLCJJbnRlZ3JhbCI6IjAiLCJMb2dpbk1hcmsiOiJINSIsImxvZ2luVGltZSI6IjgvMjkvMjAyNiAxMjowMTo0OSBQTSIsImxvZ2luSVBBZGRyZXNzIjoiNDUuNDEuMTA0LjI0MCIsImRiTnVtYmVyIjoiMCIsIklzdmFsaWRhdG9yIjoiMCIsIktleUNvZGUiOiIzMjMzMiIsImRva2VuVHypZSI6IjJBY2Nlc3NfVG9rZW4iLCJob25lVHlpZSI6IjAiLCJVc2VyVHlpZSI6IjAiLCJVc2VyTmFtZ2UiOiIuIiwiaXNzIjoiand0SXNzdWVyIiwiYXVkIjoibG90dGVyeVRpY2tldCJ9.ZL0Y9gexUTCsKwWeZhCLAAw8AABEYJt0GnIzIviMG4g"
+    auth = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOiIxNzg3OTgxNTA5IiwibmJmIjoiMTc4Nzk4MTUwOSIsImV4cCI6IjE3ODc5ODMzMDkiLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL2V4cGlyYXRpb24iOiI4LzI5LzIwMjYgMTI6MzE2NDkgUE0iLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL3JvbGUiOiJBY2Nlc3NfVG9rZW4iLCJVc2VySWQiOiIxMDEyMjEzIiwiVXNlck5hbWUiOiI5NTk3NDA5MzkzNzAiLCJVc2VyUGhvdG8iOiI5IiwiTmlja05hbWUiOiJUaG V0R3lpIiwiQW1vdW50IjoiODcuMzAiLCJJbnRlZ3JhbCI6IjAiLCJMb2dpbk1hcmsiOiJINSIsImxvZ2luVGltZSI6IjgvMjkvMjAyNiAxMjowMTo0OSBQTSIsImxvZ2luSVBBZGRyZXNzIjoiNDUuNDEuMTA0LjI0MCIsImRiTnVtYmVyIjoiMCIsIklzdmFsaWRhdG9yIjoiMCIsIktleUNvZGUiOiIzMjMzMiIsImRva2VuVHlwZSI6IjJBY2Nlc3NfVG9rZW4iLCJob25lVHlpZSI6IjAiLCJVc2VyVHlpZSI6IjAiLCJVc2VyTmFtZ2UiOiIuIiwiaXNzIjoiand0SXNzdWVyIiwiYXVkIjoibG90dGVyeVRpY2tldCJ9.ZL0Y9gexUTCsKwWeZhCLAAw8AABEYJt0GnIzIviMG4g"
 
     headers = {
         "accept": "application/json, text/plain, */*",
