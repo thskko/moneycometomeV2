@@ -37,6 +37,7 @@ CONFIG = {
     "dalarm_sl_step": 4,
     "dalarm_payout": 0.9,
     "dalarm_currency": "🇲🇲",
+    "profit_reset_threshold": 100000,
 }
 
 app = Flask(__name__)
@@ -59,8 +60,11 @@ def home():
     <p><b>Dalarm Step:</b> Step {global_agent.dalarm_step}</p>
     <p><b>Dalarm Bet Size:</b> {global_agent.dalarm_bet_size}</p>
     <p><b>SL Mode:</b> {'YES ⛔' if global_agent.is_sl_mode else 'NO ✅'}</p>
+    <p><b>SL Entry Bet:</b> {global_agent.dalarm_sl_entry_bet}</p>
     <p><b>Current Profit:</b> {global_agent.dalarm_profit:+.0f}</p>
     <p><b>Max Float:</b> {global_agent.dalarm_max_negative:.0f}</p>
+    <p><b>Max Bet Size:</b> {global_agent.dalarm_max_bet_size}</p>
+    <p><b>Total Rounds (Cycle):</b> {global_agent.dalarm_total_rounds}</p>
     """
 
 
@@ -215,6 +219,12 @@ class AdvancedAdaptiveEngine:
         self.dalarm_profit = 0.0
         self.dalarm_max_negative = 0.0
         self.is_sl_mode = False
+        self.dalarm_sl_entry_bet = CONFIG['dalarm_base_bet']
+
+        # Trackers
+        self.dalarm_max_bet_size = CONFIG['dalarm_base_bet']
+        self.dalarm_total_rounds = 0
+        self.profit_reset_threshold = CONFIG['profit_reset_threshold']
 
     def get_current_multiplier(self):
         return self.dalarm_step
@@ -434,7 +444,7 @@ class AdvancedAdaptiveEngine:
         return sum(self.prediction_history) / len(self.prediction_history)
 
     # ==========================================
-    # 🆕 DALARM
+    # DALARM
     # ==========================================
     def get_dalarm_bet_display(self):
         if self.is_sl_mode: return "⛔ SL (No Bet)"
@@ -447,16 +457,23 @@ class AdvancedAdaptiveEngine:
         return f"💰 Current Profit: {profit_str}\n📉 Max Float: {max_float_str}"
 
     def update_dalarm_bet(self, won, api_period=None):
+        # Track max bet size
+        if self.dalarm_bet_size > self.dalarm_max_bet_size:
+            self.dalarm_max_bet_size = self.dalarm_bet_size
+        # Track total rounds
+        self.dalarm_total_rounds += 1
+
         if self.is_sl_mode:
             if won:
                 self.is_sl_mode = False
                 self.dalarm_step = 1
+                self.dalarm_bet_size = self.dalarm_sl_entry_bet + CONFIG['dalarm_increment']
             else:
                 self.dalarm_step += 1
-                self.dalarm_bet_size += CONFIG['dalarm_increment']
             if self.dalarm_profit < self.dalarm_max_negative:
                 self.dalarm_max_negative = self.dalarm_profit
             return
+        
         if won:
             profit = self.dalarm_bet_size * CONFIG['dalarm_payout']
             self.dalarm_profit += profit
@@ -464,41 +481,58 @@ class AdvancedAdaptiveEngine:
             self.dalarm_bet_size = max(CONFIG['dalarm_min_bet'], self.dalarm_bet_size - CONFIG['dalarm_increment'])
         else:
             self.dalarm_profit -= self.dalarm_bet_size
-            self.dalarm_step += 1
-            self.dalarm_bet_size += CONFIG['dalarm_increment']
-            if self.dalarm_step >= CONFIG['dalarm_sl_step']:
+            if self.dalarm_step + 1 >= CONFIG['dalarm_sl_step']:
                 self.is_sl_mode = True
+                self.dalarm_sl_entry_bet = self.dalarm_bet_size
+                self.dalarm_step += 1
+            else:
+                self.dalarm_step += 1
+                self.dalarm_bet_size += CONFIG['dalarm_increment']
+        
         if self.dalarm_profit < self.dalarm_max_negative:
             self.dalarm_max_negative = self.dalarm_profit
 
     # ==========================================
-    # 🎯 MAIN LOGIC — FIXED ORDER
+    # PROFIT RESET — Step မထိ
+    # ==========================================
+    def check_profit_reset(self):
+        """Check if profit reached threshold. Report + Reset."""
+        if self.dalarm_profit >= self.profit_reset_threshold:
+            report = (
+                f"📊 <b>REPORT — Profit Reached +{self.profit_reset_threshold}</b>\n\n"
+                f"💰 Final Profit: <b>+{self.dalarm_profit:.0f}</b>\n"
+                f"📉 Max Float: <b>{self.dalarm_max_negative:.0f}</b>\n"
+                f"📈 Max Bet Size: <b>{self.dalarm_max_bet_size}</b>\n"
+                f"🎯 Total Rounds: <b>{self.dalarm_total_rounds}</b>\n\n"
+                f"🔄 <b>Auto Reset!</b>\n"
+                f"💰 Starting Fresh from 1000"
+            )
+            
+            # ✅ Reset — Step ကို မထိ
+            self.dalarm_profit = 0.0
+            self.dalarm_max_negative = 0.0
+            self.dalarm_max_bet_size = CONFIG['dalarm_base_bet']
+            self.dalarm_bet_size = CONFIG['dalarm_base_bet']
+            self.dalarm_total_rounds = 0
+            # ✅ Step, is_sl_mode, sl_entry_bet — မထိ
+            
+            return report
+        return None
+
+    # ==========================================
+    # 🎯 MAIN LOGIC
     # ==========================================
     def process_api_result(self, api_period, api_result):
         with self.lock:
             self._process_api_result_internal(api_period, api_result)
 
     def _process_api_result_internal(self, api_period, api_result):
-        """
-        Flow:
-        1. Check previous prediction → WIN/LOSS
-        2. If WIN → append WIN message (notifications list ရဲ့ ပထမ)
-        3. Compute signal for next period
-        4. Send: WIN message (ပထမ) + Signal (ဒုတိယ)
-        
-        Telegram order:
-        - Signal for N-1 (T-1 မှာ ပို့ပြီးသား)
-        - WIN for N-1 (T မှာ ပို့)
-        - Signal for N (T မှာ ပို့)
-        """
         self.last_api_period = str(api_period)
         try: api_period_int = int(api_period)
         except (ValueError, TypeError): return
         notifications = []
 
-        # ==========================================
-        # Step 1: Previous Prediction ကို စစ်
-        # ==========================================
+        # Step 1: Previous Prediction
         if self.active_prediction is not None and self.last_state is not None:
             predicted = self.active_prediction
             is_correct = (predicted.lower() == api_result.lower())
@@ -512,6 +546,7 @@ class AdvancedAdaptiveEngine:
                 self.lr_train_X.append(self.last_feature_vector)
                 self.lr_train_y.append([FeatureEngineer.encode(api_result)])
 
+            # ✅ DALARM UPDATE — Step WIN ရင် Step 1 ဖြစ်သွား
             self.update_dalarm_bet(is_correct, api_period)
 
             if is_correct:
@@ -519,7 +554,6 @@ class AdvancedAdaptiveEngine:
             else:
                 self.total_losses += 1
 
-            # ✅ WIN message — Period ထည့်
             if is_correct:
                 result_period_short = str(api_period)[-3:] if len(str(api_period)) >= 3 else str(api_period)
                 notifications.append(f"🔥 WIN — Period {result_period_short} 🔥")
@@ -528,42 +562,35 @@ class AdvancedAdaptiveEngine:
             self.last_state = None
             self.update_epsilon()
 
-        # ==========================================
-        # Step 2: Window ထဲ api_result ထည့်
-        # ==========================================
+            # ✅ PROFIT RESET CHECK — Step ကို မထိ
+            reset_report = self.check_profit_reset()
+            if reset_report:
+                notifications.append(reset_report)
+
+        # Step 2: Window
         self.window.append(api_result)
         if len(self.window) > 0:
             features, _ = FeatureEngineer.extract(list(self.window))
             self.last_feature_vector = FeatureEngineer.to_vector(features)
 
-        # ==========================================
-        # Step 3: Next Round အတွက် Signal
-        # ==========================================
+        # Step 3: Signal
         next_period_full = str(api_period_int + 1)
         self.next_signal_period = next_period_full
         next_period_short = next_period_full[-3:] if len(next_period_full) >= 3 else next_period_full
 
         if len(self.window) < CONFIG['min_data_before_signal']:
-            notifications.append(
-                f"💖Period {next_period_short}\n"
-                f"⏳ Collecting... {len(self.window)}/{CONFIG['min_data_before_signal']}"
-            )
+            notifications.append(f"💖Period {next_period_short}\n⏳ Collecting... {len(self.window)}/{CONFIG['min_data_before_signal']}")
         else:
             prediction, regime, confidence = self.get_consensus(list(self.window))
             if confidence < CONFIG['min_confidence_for_trade']:
-                notifications.append(
-                    f"💖Period {next_period_short}\n"
-                    f"⏭️ SKIP (Conf: {confidence:.1%})"
-                )
+                notifications.append(f"💖Period {next_period_short}\n⏭️ SKIP (Conf: {confidence:.1%})")
                 self.active_prediction = None
             else:
                 self.last_state = self.get_state_key()
                 self.active_prediction = prediction
                 self.total_signals += 1
-
                 bet_display = self.get_dalarm_bet_display()
                 profit_display = self.get_dalarm_profit_display()
-
                 notifications.append(
                     f"💖Period {next_period_short}\n"
                     f"🎯 SIGNAL → {prediction.capitalize()}\n"
@@ -574,12 +601,9 @@ class AdvancedAdaptiveEngine:
                     f"{profit_display}"
                 )
 
-        # ==========================================
-        # Send — WIN message (ပထမ) + Signal (ဒုတိယ)
-        # ==========================================
         for msg in notifications:
             self.send_telegram(msg)
-            time.sleep(0.5)  # ← Rate limit ကာကွယ်
+            time.sleep(0.5)
 
 
 def poll_telegram(agent):
@@ -605,7 +629,9 @@ def poll_telegram(agent):
                             f"💰 Bet: {agent.dalarm_bet_size}\n"
                             f"⛔ SL: {'YES' if agent.is_sl_mode else 'NO'}\n"
                             f"💵 Current Profit: {agent.dalarm_profit:+.0f}\n"
-                            f"📉 Max Float: {agent.dalarm_max_negative:.0f}"
+                            f"📉 Max Float: {agent.dalarm_max_negative:.0f}\n"
+                            f"📈 Max Bet Size: {agent.dalarm_max_bet_size}\n"
+                            f"🎯 Rounds: {agent.dalarm_total_rounds}"
                         )
                     elif text == "/reset":
                         with agent.lock:
@@ -613,7 +639,10 @@ def poll_telegram(agent):
                             agent.dalarm_step = 1
                             agent.dalarm_profit = 0.0
                             agent.dalarm_max_negative = 0.0
+                            agent.dalarm_max_bet_size = CONFIG['dalarm_base_bet']
+                            agent.dalarm_total_rounds = 0
                             agent.is_sl_mode = False
+                            agent.dalarm_sl_entry_bet = CONFIG['dalarm_base_bet']
                         agent.send_telegram("🔄 Reset")
         except Exception as e:
             print(f"TG Poll Error: {e}", flush=True)
@@ -621,12 +650,12 @@ def poll_telegram(agent):
 
 
 def run_bot():
-    print("🤖 Bot Started (Dalarm — WIN order fixed)", flush=True)
+    print("🤖 Bot Started (Dalarm — Profit Reset)", flush=True)
     agent = AdvancedAdaptiveEngine()
     threading.Thread(target=poll_telegram, args=(agent,), daemon=True).start()
     last_processed_period = None
     url = CONFIG['api_url']
-    auth = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOiIxNzg3OTgxNTA5IiwibmJmIjoiMTc4Nzk4MTUwOSIsImV4cCI6IjE3ODc5ODMzMDkiLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL2V4cGlyYXRpb24iOiI4LzI5LzIwMjYgMTI6MzE2NDkgUE0iLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL3JvbGUiOiJBY2Nlc3NfVG9rZW4iLCJVc2VySWQiOiIxMDEyMjEzIiwiVXNlck5hbWUiOiI5NTk3NDA5MzkzNzAiLCJVc2VyUGhvdG8iOiI5IiwiTmlja05hbWUiOiJUaGV0R3lpIiwiQW1vdW50IjoiODcuMzAiLCJJbnRlZ3JhbCI6IjAiLCJMb2dpbk1hcmsiOiJINSIsImxvZ2luVGltZSI6IjgvMjkvMjAyNiAxMjowMTo0OSBQTSIsImxvZ2luSVBBZGRyZXNzIjoiNDUuNDEuMTA0LjI0MCIsImRiTnVtYmVyIjoiMCIsIklzdmFsaWRhdG9yIjoiMCIsIktleUNvZGUiOiIzMjMzMiIsImRva2VuVHlwZSI6IjJBY2Nlc3NfVG9rZW4iLCJob25lVHlpZSI6IjAiLCJVc2VyVHlwZSI6IjAiLCJVc2VyTmFtZ2UiOiIuIiwiaXNzIjoiand0SXNzdWVyIiwiYXVkIjoibG90dGVyeVRpY2tldCJ9.ZL0Y9gexUTCsKwWeZhCLAAw8AABEYJt0GnIzIviMG4g"
+    auth = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOiIxNzg3OTgxNTA5IiwibmJmIjoiMTc4Nzk4MTUwOSIsImV4cCI6IjE3ODc5ODMzMDkiLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL2V4cGlyYXRpb24iOiI4LzI5LzIwMjYgMTI6MzE2NDkgUE0iLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL3JvbGUiOiJBY2Nlc3NfVG9rZW4iLCJVc2VySWQiOiIxMDEyMjEzIiwiVXNlck5hbWUiOiI5NTk3NDA5MzkzNzAiLCJVc2VyUGhvdG8iOiI5IiwiTmlja05hbWUiOiJUaGV0R3lpIiwiQW1vdW50IjoiODcuMzAiLCJJbnRlZ3JhbCI6IjAiLCJsb2dpbk1hcmsiOiJINSIsImxvZ2luVGltZSI6IjgvMjkvMjAyNiAxMjowMTo0OSBQTSIsImxvZ2luSVBBZGRyZXNzIjoiNDUuNDEuMTA0LjI0MCIsImRiTnVtYmVyIjoiMCIsIklzdmFsaWRhdG9yIjoiMCIsIktleUNvZGUiOiIzMjMzMiIsImRva2VuVHlwZSI6IjJBY2Nlc3NfVG9rZW4iLCJob25lVHlpZSI6IjAiLCJVc2VyVHlwZSI6IjAiLCJVc2VyTmFtZ2UiOiIuIiwiaXNzIjoiand0SXNzdWVyIiwiYXVkIjoibG90dGVyeVRpY2tldCJ9.ZL0Y9gexUTCsKwWeZhCLAAw8AABEYJt0GnIzIviMG4g"
     headers = {"accept": "application/json, text/plain, */*", "authorization": f"Bearer {auth}", "content-type": "application/json;charset=UTF-8", "origin": "https://6win598.com", "referer": "https://6win598.com/", "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     while True:
         try:
