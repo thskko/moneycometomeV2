@@ -10,7 +10,7 @@ from collections import deque
 from flask import Flask
 
 # ==========================================
-# Telegram နဲ့ Supabase အချက်အလက်များ
+# Telegram နဲ့ Supabase
 # ==========================================
 TELEGRAM_TOKEN = "8913070806:AAF3rP0zKJtofE-5KVesqcdoHzn7Go0avho"
 CHAT_ID = "-1004402480797"
@@ -22,40 +22,20 @@ SUPABASE_KEY = "sb_publishable_bVJj1lqSAsIQ1kQ8Ae2vAQ_o3yCjDeA"
 # 🧠 CONFIGURATION
 # ==========================================
 CONFIG = {
-    # Q-Learning
-    "q_lr": 0.45,
-    "q_discount": 0.95,
-    "q_epsilon": 0.10,
-    "q_epsilon_decay": 0.999,
-    "q_min_epsilon": 0.02,
-
-    # Window & Features
-    "window_size": 60,
-    "short_ma_period": 10,
-    "long_ma_period": 30,
+    "q_lr": 0.45, "q_discount": 0.95, "q_epsilon": 0.10,
+    "q_epsilon_decay": 0.999, "q_min_epsilon": 0.02,
+    "window_size": 60, "short_ma_period": 10, "long_ma_period": 30,
     "min_data_before_signal": 15,
-
-    # Signal Filtering
-    "min_confidence_for_trade": 0.65,
-    "chop_filter_threshold": 0.6,
-    "trend_confirmation": 2,
-    "min_agreement": 4,
-    "adaptive_weight_alpha": 0.2,
-    "rolling_accuracy_window": 50,
-
-    # API
+    "min_confidence_for_trade": 0.65, "chop_filter_threshold": 0.6,
+    "trend_confirmation": 2, "min_agreement": 4,
+    "adaptive_weight_alpha": 0.2, "rolling_accuracy_window": 50,
     "api_url": "https://6lotteryapi.com/api/webapi/GetNoaverageEmerdList",
-    "lr_lr": 0.01,
-    "lr_epochs": 3,
-
-    # ==========================================
-    # 🆕 DALARM BET STYLE
-    # ==========================================
-    "dalarm_base_bet": 1000,       # Start bet
-    "dalarm_increment": 1000,      # +1000 / -1000
-    "dalarm_min_bet": 1000,        # Minimum
-    "dalarm_sl_step": 4,           # Step 4+ → SL mode
-    "dalarm_payout": 0.9,          # Win payout (1.9x total)
+    "lr_lr": 0.01, "lr_epochs": 3,
+    "dalarm_base_bet": 1000,
+    "dalarm_increment": 1000,
+    "dalarm_min_bet": 1000,
+    "dalarm_sl_step": 4,
+    "dalarm_payout": 0.9,
     "dalarm_currency": "🇲🇲",
 }
 
@@ -76,96 +56,73 @@ def home():
     return f"""
     <h2>📊 WINGO BOT REPORT (DALARM STYLE)</h2>
     <p><b>Status:</b> {'PAUSED 🛑' if global_agent.is_paused else 'RUNNING 🟢'}</p>
-    <p><b>Last API Period:</b> {global_agent.last_api_period}</p>
-    <p><b>Total Signals:</b> {global_agent.total_signals}</p>
-    <p><b>Win Rate:</b> {wr:.2f}%</p>
     <p><b>Dalarm Step:</b> Step {global_agent.dalarm_step}</p>
     <p><b>Dalarm Bet Size:</b> {global_agent.dalarm_bet_size}</p>
     <p><b>SL Mode:</b> {'YES ⛔' if global_agent.is_sl_mode else 'NO ✅'}</p>
-    <p><b>Dalarm Profit:</b> {global_agent.dalarm_profit:+.0f}</p>
+    <p><b>Current Profit:</b> {global_agent.dalarm_profit:+.0f}</p>
+    <p><b>Max Float:</b> {global_agent.dalarm_max_negative:.0f}</p>
     """
 
 
 class FeatureEngineer:
     @staticmethod
-    def encode(r):
-        return 1 if r == "Big" else 0
-
+    def encode(r): return 1 if r == "Big" else 0
     @staticmethod
     def ma(lst, period):
-        if not lst:
-            return 0.5
-        if len(lst) < period:
-            return sum(lst) / len(lst)
+        if not lst: return 0.5
+        if len(lst) < period: return sum(lst) / len(lst)
         return sum(list(lst)[-period:]) / period
-
     @staticmethod
     def variance(lst):
-        if len(lst) < 2:
-            return 0.0
+        if len(lst) < 2: return 0.0
         mean = sum(lst) / len(lst)
         return sum((x - mean) ** 2 for x in lst) / len(lst)
-
     @staticmethod
-    def std(lst):
-        return math.sqrt(FeatureEngineer.variance(lst))
-
+    def std(lst): return math.sqrt(FeatureEngineer.variance(lst))
     @staticmethod
     def autocorr(lst, lag=1):
         n = len(lst)
-        if n < lag + 1:
-            return 0.0
+        if n < lag + 1: return 0.0
         mean = sum(lst) / n
         num = sum((lst[i] - mean) * (lst[i - lag] - mean) for i in range(lag, n))
         den = sum((x - mean) ** 2 for x in lst)
         return num / den if den != 0 else 0.0
-
     @staticmethod
     def fft_freq(lst):
-        if len(lst) < 8:
-            return 0.0
+        if len(lst) < 8: return 0.0
         arr = np.array(lst)
         mags = np.abs(np.fft.fft(arr))
         if len(mags) > 1:
             dom = np.argmax(mags[1:]) + 1
             return dom / len(lst)
         return 0.0
-
     @staticmethod
     def entropy(lst):
         from collections import Counter
         counts = Counter(lst)
         probs = [c / len(lst) for c in counts.values()]
         return -sum(p * math.log2(p) for p in probs if p > 0)
-
     @staticmethod
     def streak(encoded):
-        if not encoded:
-            return 0
+        if not encoded: return 0
         count = 1
         for i in range(len(encoded) - 2, -1, -1):
-            if encoded[i] == encoded[-1]:
-                count += 1
-            else:
-                break
+            if encoded[i] == encoded[-1]: count += 1
+            else: break
         return count
-
     @staticmethod
     def flip_rate(encoded):
-        if len(encoded) < 2:
-            return 0.0
+        if len(encoded) < 2: return 0.0
         flips = sum(1 for i in range(len(encoded) - 1) if encoded[i] != encoded[i + 1])
         return flips / (len(encoded) - 1)
-
     @staticmethod
     def extract(window):
         encoded = [FeatureEngineer.encode(r) for r in window]
         n = len(encoded)
-        features = {
+        return {
             'ma_short': FeatureEngineer.ma(encoded, CONFIG['short_ma_period']),
             'ma_long': FeatureEngineer.ma(encoded, CONFIG['long_ma_period']),
-            'ma_ratio': FeatureEngineer.ma(encoded, CONFIG['short_ma_period']) /
-                        max(FeatureEngineer.ma(encoded, CONFIG['long_ma_period']), 0.01),
+            'ma_ratio': FeatureEngineer.ma(encoded, CONFIG['short_ma_period']) / max(FeatureEngineer.ma(encoded, CONFIG['long_ma_period']), 0.01),
             'variance': FeatureEngineer.variance(encoded),
             'std_dev': FeatureEngineer.std(encoded),
             'autocorr_lag1': FeatureEngineer.autocorr(encoded, 1),
@@ -180,9 +137,7 @@ class FeatureEngineer:
             'streak_direction': encoded[-1] if encoded else 0,
             'flip_rate': FeatureEngineer.flip_rate(encoded),
             'position_in_window': n / CONFIG['window_size'],
-        }
-        return features, encoded
-
+        }, encoded
     @staticmethod
     def to_vector(features):
         return [
@@ -202,13 +157,8 @@ class LogisticRegression:
         self.W = np.random.randn(input_size, 1) * scale
         self.b = np.zeros((1, 1))
         self.loss = 0.0
-
-    def sigmoid(self, z):
-        return 1.0 / (1.0 + np.exp(-np.clip(z, -500, 500)))
-
-    def forward(self, X):
-        return self.sigmoid(np.dot(X, self.W) + self.b)
-
+    def sigmoid(self, z): return 1.0 / (1.0 + np.exp(-np.clip(z, -500, 500)))
+    def forward(self, X): return self.sigmoid(np.dot(X, self.W) + self.b)
     def train(self, X, y, epochs=3):
         X = np.array(X).reshape(-1, X.shape[-1]) if len(X.shape) > 1 else X.reshape(1, -1)
         y = np.array(y).reshape(-1, 1) if len(y.shape) > 1 else y.reshape(-1, 1)
@@ -221,9 +171,7 @@ class LogisticRegression:
             self.W -= self.lr * (np.dot(X.T, error) / m)
             self.b -= self.lr * (np.sum(error, axis=0, keepdims=True) / m)
         return self.loss
-
-    def predict(self, X):
-        return self.forward(np.array(X).reshape(1, -1))[0][0]
+    def predict(self, X): return self.forward(np.array(X).reshape(1, -1))[0][0]
 
 
 class AdvancedAdaptiveEngine:
@@ -257,67 +205,47 @@ class AdvancedAdaptiveEngine:
             "MeanReversion": 1.0, "Momentum": 1.0,
             "RegimeAware": 1.0, "LogisticReg": 1.0
         }
-        self.model_accuracy = {
-            k: deque(maxlen=CONFIG['rolling_accuracy_window'])
-            for k in self.model_weights
-        }
+        self.model_accuracy = {k: deque(maxlen=CONFIG['rolling_accuracy_window']) for k in self.model_weights}
         self.regime = "unknown"
         self.is_paused = False
 
-        # ==========================================
-        # 🆕 DALARM BET STYLE — STATE (FIXED)
-        # ==========================================
-        self.dalarm_bet_size = CONFIG['dalarm_base_bet']  # Current bet
-        self.dalarm_step = 1                              # ← SEPARATE STEP TRACK
-        self.dalarm_profit = 0.0                          # Total profit
-        self.is_sl_mode = False                           # SL mode
-        self.dalarm_total_wins = 0
-        self.dalarm_total_losses = 0
+        # DALARM
+        self.dalarm_bet_size = CONFIG['dalarm_base_bet']
+        self.dalarm_step = 1
+        self.dalarm_profit = 0.0
+        self.dalarm_max_negative = 0.0
+        self.is_sl_mode = False
 
     def get_current_multiplier(self):
         return self.dalarm_step
 
-    # ==========================================
-    # 🆕 TELEGRAM with RETRY
-    # ==========================================
     def send_telegram(self, message):
         def _send():
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-            max_retries = 3
-            for attempt in range(max_retries):
+            for attempt in range(3):
                 try:
-                    res = requests.post(
-                        url,
-                        json={"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"},
-                        timeout=15
-                    )
+                    res = requests.post(url, json={"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=15)
                     print(f"TG Send: {res.status_code}", flush=True)
-                    if res.status_code == 200:
-                        return
+                    if res.status_code == 200: return
                 except Exception as e:
-                    print(f"TG Error (attempt {attempt+1}/{max_retries}): {e}", flush=True)
+                    print(f"TG Error (attempt {attempt+1}/3): {e}", flush=True)
                     time.sleep(2)
-            print(f"TG FAILED after {max_retries} attempts", flush=True)
         threading.Thread(target=_send, daemon=True).start()
 
     def get_state_key(self, window=None):
-        if window is None:
-            window = self.window
-        if len(window) < 5:
-            return "Big,Big,Big,Big,Big"
+        if window is None: window = self.window
+        if len(window) < 5: return "Big,Big,Big,Big,Big"
         return ",".join(list(window)[-5:])
 
     def get_q_action(self, state):
-        if state not in self.q_table:
-            self.q_table[state] = {"Big": 0.5, "Small": 0.5}
+        if state not in self.q_table: self.q_table[state] = {"Big": 0.5, "Small": 0.5}
         actions = self.q_table[state]
         if np.random.random() < self.epsilon:
             return "Big" if np.random.random() < 0.5 else "Small"
         return "Big" if actions["Big"] >= actions["Small"] else "Small"
 
     def update_q_table(self, state, action, reward):
-        if state not in self.q_table:
-            self.q_table[state] = {"Big": 0.5, "Small": 0.5}
+        if state not in self.q_table: self.q_table[state] = {"Big": 0.5, "Small": 0.5}
         old_q = self.q_table[state][action]
         new_q = old_q + self.q_lr * (reward + self.q_discount * max(self.q_table[state].values()) - old_q)
         self.q_table[state][action] = new_q
@@ -325,118 +253,92 @@ class AdvancedAdaptiveEngine:
     def update_epsilon(self):
         self.epsilon = max(CONFIG['q_min_epsilon'], self.epsilon * CONFIG['q_epsilon_decay'])
 
-    # ==========================================
-    # 📊 ALL PREDICTION MODELS
-    # ==========================================
     def markov_predict(self, lst):
-        if len(lst) < 4:
-            return "Big"
+        if len(lst) < 4: return "Big"
         transitions = {}
         arr = list(lst)
         for i in range(len(arr) - 1):
             key = arr[i]
-            if key not in transitions:
-                transitions[key] = {"Big": 0, "Small": 0}
+            if key not in transitions: transitions[key] = {"Big": 0, "Small": 0}
             transitions[key][arr[i + 1]] += 1
         last = arr[-1]
         if last in transitions:
             b, s = transitions[last]["Big"], transitions[last]["Small"]
-            if b == s:
-                return last
+            if b == s: return last
             return "Big" if b > s else "Small"
         return last
 
     def pattern_predict(self, lst):
         arr = list(lst)
-        if len(arr) < 8:
-            return arr[-1] if arr else "Big"
+        if len(arr) < 8: return arr[-1] if arr else "Big"
         for length in range(min(8, len(arr) // 2), 2, -1):
             pattern = tuple(arr[-length:])
             matches = []
             for i in range(len(arr) - length):
                 if tuple(arr[i:i + length]) == pattern and (i + length) < len(arr):
                     matches.append(arr[i + length])
-            if matches:
-                return max(set(matches), key=matches.count)
+            if matches: return max(set(matches), key=matches.count)
         return arr[-1]
 
     def streak_predict(self, lst):
         arr = list(lst)
-        if len(arr) < 5:
-            return "Big"
+        if len(arr) < 5: return "Big"
         encoded = [FeatureEngineer.encode(r) for r in arr]
         streak_count = 1
         for i in range(len(encoded) - 2, -1, -1):
-            if encoded[i] == encoded[-1]:
-                streak_count += 1
-            else:
-                break
+            if encoded[i] == encoded[-1]: streak_count += 1
+            else: break
         mom3 = sum(encoded[-3:]) / 3.0
         mom5 = sum(encoded[-5:]) / 5.0
-        if streak_count >= 4:
-            return "Small" if arr[-1] == "Big" else "Big"
-        elif streak_count >= 3 and abs(mom3 - mom5) > 0.4:
-            return "Small" if arr[-1] == "Big" else "Big"
-        elif mom3 > 0.6:
-            return "Big"
-        elif mom3 < 0.4:
-            return "Small"
+        if streak_count >= 4: return "Small" if arr[-1] == "Big" else "Big"
+        elif streak_count >= 3 and abs(mom3 - mom5) > 0.4: return "Small" if arr[-1] == "Big" else "Big"
+        elif mom3 > 0.6: return "Big"
+        elif mom3 < 0.4: return "Small"
         return arr[-1]
 
     def q_momentum_predict(self, lst, state_key):
         q_act = self.get_q_action(state_key)
         recent = list(lst)[-3:] if len(lst) >= 3 else list(lst)
         mom = recent[-1] if recent else "Big"
-        if q_act == mom:
-            return q_act
+        if q_act == mom: return q_act
         if state_key in self.q_table:
             q_conf = abs(self.q_table[state_key]["Big"] - self.q_table[state_key]["Small"])
-            if q_conf > 0.3:
-                return q_act
+            if q_conf > 0.3: return q_act
         return mom
 
     def statistical_predict(self, lst):
         arr = list(lst)
-        if len(arr) < 10:
-            return "Big"
+        if len(arr) < 10: return "Big"
         encoded = [FeatureEngineer.encode(r) for r in arr]
         ma_s = FeatureEngineer.ma(encoded, CONFIG['short_ma_period'])
         ma_l = FeatureEngineer.ma(encoded, CONFIG['long_ma_period'])
         dev = ma_s - ma_l
-        if abs(dev) > 0.2:
-            return "Small" if dev > 0 else "Big"
+        if abs(dev) > 0.2: return "Small" if dev > 0 else "Big"
         return "Big" if ma_s > ma_l else "Small"
 
     def mean_reversion_predict(self, lst):
         arr = list(lst)
-        if len(arr) < 10:
-            return "Big"
+        if len(arr) < 10: return "Big"
         encoded = [FeatureEngineer.encode(r) for r in arr]
         short_ma = sum(encoded[-5:]) / 5.0
         long_ma = sum(encoded[-20:]) / 20.0 if len(encoded) >= 20 else sum(encoded) / len(encoded)
         deviation = short_ma - long_ma
-        if deviation > 0.3:
-            return "Small"
-        elif deviation < -0.3:
-            return "Big"
+        if deviation > 0.3: return "Small"
+        elif deviation < -0.3: return "Big"
         return arr[-1] if arr else "Big"
 
     def momentum_predict(self, lst):
         arr = list(lst)
-        if len(arr) < 5:
-            return "Big"
+        if len(arr) < 5: return "Big"
         encoded = [FeatureEngineer.encode(r) for r in arr]
         recent_3 = sum(encoded[-3:]) / 3.0
         prev_3 = sum(encoded[-6:-3]) / 3.0 if len(encoded) >= 6 else sum(encoded[:3]) / min(3, len(encoded))
-        if recent_3 > prev_3 + 0.2:
-            return "Big"
-        elif recent_3 < prev_3 - 0.2:
-            return "Small"
+        if recent_3 > prev_3 + 0.2: return "Big"
+        elif recent_3 < prev_3 - 0.2: return "Small"
         return arr[-1] if arr else "Big"
 
     def detect_market_regime(self, lst):
-        if len(lst) < 10:
-            return "unknown", 0.0
+        if len(lst) < 10: return "unknown", 0.0
         encoded = [FeatureEngineer.encode(r) for r in lst]
         last_10 = encoded[-10:]
         flips = sum(1 for i in range(len(last_10) - 1) if last_10[i] != last_10[i + 1])
@@ -444,22 +346,17 @@ class AdvancedAdaptiveEngine:
         recent_5 = sum(last_10[-5:]) / 5.0
         prev_5 = sum(last_10[:5]) / 5.0
         momentum = recent_5 - prev_5
-        if flip_ratio < 0.3 and abs(momentum) > 0.3:
-            return "trending", abs(momentum)
-        elif flip_ratio > 0.6:
-            return "choppy", flip_ratio
-        else:
-            return "neutral", 0.5
+        if flip_ratio < 0.3 and abs(momentum) > 0.3: return "trending", abs(momentum)
+        elif flip_ratio > 0.6: return "choppy", flip_ratio
+        else: return "neutral", 0.5
 
     def regime_aware_predict(self, lst):
         regime, strength = self.detect_market_regime(lst)
-        if regime == "trending":
-            return lst[-1] if lst else "Big"
+        if regime == "trending": return lst[-1] if lst else "Big"
         elif regime == "choppy":
             encoded = [FeatureEngineer.encode(r) for r in lst[-5:]]
             streak = FeatureEngineer.streak(encoded)
-            if streak >= 3:
-                return "Small" if lst[-1] == "Big" else "Big"
+            if streak >= 3: return "Small" if lst[-1] == "Big" else "Big"
             return lst[-1] if lst else "Big"
         else:
             encoded = [FeatureEngineer.encode(r) for r in lst[-10:]]
@@ -479,16 +376,14 @@ class AdvancedAdaptiveEngine:
             return "Big", 0.5
 
     def check_volatility(self, lst):
-        if len(lst) < 6:
-            return False, 0.0
+        if len(lst) < 6: return False, 0.0
         recent = list(lst)[-6:]
         flips = sum(1 for i in range(len(recent) - 1) if recent[i] != recent[i + 1])
         ratio = flips / 5.0
         return ratio >= CONFIG['chop_filter_threshold'], ratio
 
     def update_model_weights(self, actual_result):
-        if actual_result is None:
-            return
+        if actual_result is None: return
         for name, pred in self.last_predictions_by_model.items():
             correct = 1 if pred == actual_result else 0
             self.model_accuracy[name].append(correct)
@@ -500,8 +395,7 @@ class AdvancedAdaptiveEngine:
                 self.model_weights[name] = max(0.3, min(5.0, new_w))
 
     def get_consensus(self, window_list, state_key=None):
-        if state_key is None:
-            state_key = self.get_state_key()
+        if state_key is None: state_key = self.get_state_key()
         m1 = self.markov_predict(window_list)
         m2 = self.pattern_predict(window_list)
         m3 = self.streak_predict(window_list)
@@ -512,20 +406,12 @@ class AdvancedAdaptiveEngine:
         m8 = self.regime_aware_predict(window_list)
         features, _ = FeatureEngineer.extract(window_list)
         lr_pred, lr_conf = self.lr_predict(features)
-        predictions = {
-            "Markov": m1, "Pattern": m2, "Streak": m3,
-            "QLearning": m4, "Statistical": m5,
-            "MeanReversion": m6, "Momentum": m7,
-            "RegimeAware": m8, "LogisticReg": lr_pred
-        }
+        predictions = {"Markov": m1, "Pattern": m2, "Streak": m3, "QLearning": m4, "Statistical": m5, "MeanReversion": m6, "Momentum": m7, "RegimeAware": m8, "LogisticReg": lr_pred}
         self.last_predictions_by_model = predictions
         scores = {"Big": 0.0, "Small": 0.0}
-        for name, pred in predictions.items():
-            scores[pred] += self.model_weights.get(name, 1.0)
-        if lr_pred == "Big":
-            scores["Big"] += lr_conf * 2.0
-        else:
-            scores["Small"] += (1 - lr_conf) * 2.0
+        for name, pred in predictions.items(): scores[pred] += self.model_weights.get(name, 1.0)
+        if lr_pred == "Big": scores["Big"] += lr_conf * 2.0
+        else: scores["Small"] += (1 - lr_conf) * 2.0
         total_w = sum(self.model_weights.values()) + 2.0
         confidence = max(scores["Big"], scores["Small"]) / total_w
         predicted = "Big" if scores["Big"] >= scores["Small"] else "Small"
@@ -535,93 +421,84 @@ class AdvancedAdaptiveEngine:
         regime, regime_strength = self.detect_market_regime(window_list)
         self.regime = regime
         if regime == "trending":
-            if predicted != window_list[-1]:
-                confidence *= 0.7
+            if predicted != window_list[-1]: confidence *= 0.7
         elif regime == "choppy":
-            if predicted == window_list[-1]:
-                confidence *= 0.7
+            if predicted == window_list[-1]: confidence *= 0.7
         self.last_confidence = confidence
         is_choppy, flip = self.check_volatility(window_list)
         note = f" | {regime.capitalize()}"
         return predicted, f"🎯 Big={scores['Big']:.1f}/Small={scores['Small']:.1f} | {agreement_count}/9 | {regime}{note}", confidence
 
     def get_rolling_accuracy(self):
-        if not self.prediction_history:
-            return 0.0
+        if not self.prediction_history: return 0.0
         return sum(self.prediction_history) / len(self.prediction_history)
 
     # ==========================================
-    # 🆕 DALARM BET STYLE — FIXED CORE LOGIC
+    # 🆕 DALARM
     # ==========================================
     def get_dalarm_bet_display(self):
-        """Return bet display string (empty if SL mode)."""
-        if self.is_sl_mode:
-            return "⛔ SL (No Bet)"
+        if self.is_sl_mode: return "⛔ SL (No Bet)"
         return f"{CONFIG['dalarm_currency']} {self.dalarm_bet_size}"
 
     def get_dalarm_profit_display(self):
-        """Return profit display string."""
-        if self.dalarm_profit >= 0:
-            return f"💰 Profit: +{self.dalarm_profit:.0f}"
-        else:
-            return f"💰 Profit: {self.dalarm_profit:.0f}"
+        if self.dalarm_profit >= 0: profit_str = f"+{self.dalarm_profit:.0f}"
+        else: profit_str = f"{self.dalarm_profit:.0f}"
+        max_float_str = f"{self.dalarm_max_negative:.0f}"
+        return f"💰 Current Profit: {profit_str}\n📉 Max Float: {max_float_str}"
 
-    def update_dalarm_bet(self, won):
-        """
-        Update dalarm bet size and step.
-        
-        Rules:
-        - WIN → Step 1, Bet -1000
-        - LOSE → Step +1, Bet +1000
-        - Step 4+ → SL mode
-        - SL WIN → Step 1, resume
-        """
+    def update_dalarm_bet(self, won, api_period=None):
         if self.is_sl_mode:
-            # SL mode — bet မလောင်း
             if won:
-                # SL WIN → Step 1, resume
                 self.is_sl_mode = False
                 self.dalarm_step = 1
-                # Bet size ကို လက်ရှိအတိုင်း ထား (SL မတိုင်ခင်)
+            else:
+                self.dalarm_step += 1
+                self.dalarm_bet_size += CONFIG['dalarm_increment']
+            if self.dalarm_profit < self.dalarm_max_negative:
+                self.dalarm_max_negative = self.dalarm_profit
             return
-
-        # Normal betting
         if won:
-            # WIN → Step 1, Bet -1000
             profit = self.dalarm_bet_size * CONFIG['dalarm_payout']
             self.dalarm_profit += profit
-            self.dalarm_step = 1  # ← FIXED: Step 1
-            self.dalarm_bet_size = max(
-                CONFIG['dalarm_min_bet'],
-                self.dalarm_bet_size - CONFIG['dalarm_increment']
-            )
-            self.dalarm_total_wins += 1
+            self.dalarm_step = 1
+            self.dalarm_bet_size = max(CONFIG['dalarm_min_bet'], self.dalarm_bet_size - CONFIG['dalarm_increment'])
         else:
-            # LOSE → Step +1, Bet +1000
             self.dalarm_profit -= self.dalarm_bet_size
-            self.dalarm_step += 1  # ← FIXED: Step +1
+            self.dalarm_step += 1
             self.dalarm_bet_size += CONFIG['dalarm_increment']
-            self.dalarm_total_losses += 1
-            # Step 4+ → SL mode
             if self.dalarm_step >= CONFIG['dalarm_sl_step']:
                 self.is_sl_mode = True
+        if self.dalarm_profit < self.dalarm_max_negative:
+            self.dalarm_max_negative = self.dalarm_profit
 
     # ==========================================
-    # 🎯 MAIN LOGIC
+    # 🎯 MAIN LOGIC — FIXED ORDER
     # ==========================================
     def process_api_result(self, api_period, api_result):
         with self.lock:
             self._process_api_result_internal(api_period, api_result)
 
     def _process_api_result_internal(self, api_period, api_result):
+        """
+        Flow:
+        1. Check previous prediction → WIN/LOSS
+        2. If WIN → append WIN message (notifications list ရဲ့ ပထမ)
+        3. Compute signal for next period
+        4. Send: WIN message (ပထမ) + Signal (ဒုတိယ)
+        
+        Telegram order:
+        - Signal for N-1 (T-1 မှာ ပို့ပြီးသား)
+        - WIN for N-1 (T မှာ ပို့)
+        - Signal for N (T မှာ ပို့)
+        """
         self.last_api_period = str(api_period)
-        try:
-            api_period_int = int(api_period)
-        except (ValueError, TypeError):
-            return
+        try: api_period_int = int(api_period)
+        except (ValueError, TypeError): return
         notifications = []
 
+        # ==========================================
         # Step 1: Previous Prediction ကို စစ်
+        # ==========================================
         if self.active_prediction is not None and self.last_state is not None:
             predicted = self.active_prediction
             is_correct = (predicted.lower() == api_result.lower())
@@ -635,28 +512,33 @@ class AdvancedAdaptiveEngine:
                 self.lr_train_X.append(self.last_feature_vector)
                 self.lr_train_y.append([FeatureEngineer.encode(api_result)])
 
-            # 🆕 DALARM BET UPDATE
-            self.update_dalarm_bet(is_correct)
+            self.update_dalarm_bet(is_correct, api_period)
 
             if is_correct:
                 self.total_wins += 1
             else:
                 self.total_losses += 1
 
+            # ✅ WIN message — Period ထည့်
             if is_correct:
-                notifications.append("🔥🔥🔥 WIN 🔥🔥🔥")
+                result_period_short = str(api_period)[-3:] if len(str(api_period)) >= 3 else str(api_period)
+                notifications.append(f"🔥 WIN — Period {result_period_short} 🔥")
 
             self.active_prediction = None
             self.last_state = None
             self.update_epsilon()
 
+        # ==========================================
         # Step 2: Window ထဲ api_result ထည့်
+        # ==========================================
         self.window.append(api_result)
         if len(self.window) > 0:
             features, _ = FeatureEngineer.extract(list(self.window))
             self.last_feature_vector = FeatureEngineer.to_vector(features)
 
+        # ==========================================
         # Step 3: Next Round အတွက် Signal
+        # ==========================================
         next_period_full = str(api_period_int + 1)
         self.next_signal_period = next_period_full
         next_period_short = next_period_full[-3:] if len(next_period_full) >= 3 else next_period_full
@@ -679,7 +561,6 @@ class AdvancedAdaptiveEngine:
                 self.active_prediction = prediction
                 self.total_signals += 1
 
-                # 🆕 DALARM BET + PROFIT
                 bet_display = self.get_dalarm_bet_display()
                 profit_display = self.get_dalarm_profit_display()
 
@@ -687,24 +568,24 @@ class AdvancedAdaptiveEngine:
                     f"💖Period {next_period_short}\n"
                     f"🎯 SIGNAL → {prediction.capitalize()}\n"
                     f"📊 Confidence: {confidence:.1%}\n"
-                    f"💰 Step {self.dalarm_step}x\n"     # ← FIXED: use dalarm_step
+                    f"💰 Step {self.dalarm_step}x\n"
                     f"📈 Win Rate: {self.get_rolling_accuracy():.0%}\n"
                     f"{bet_display}\n"
                     f"{profit_display}"
                 )
 
+        # ==========================================
+        # Send — WIN message (ပထမ) + Signal (ဒုတိယ)
+        # ==========================================
         for msg in notifications:
             self.send_telegram(msg)
+            time.sleep(0.5)  # ← Rate limit ကာကွယ်
 
 
 def poll_telegram(agent):
     try:
-        requests.get(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook?drop_pending_updates=true",
-            timeout=10
-        )
-    except:
-        pass
+        requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook?drop_pending_updates=true", timeout=10)
+    except: pass
     offset = 0
     while True:
         try:
@@ -716,27 +597,23 @@ def poll_telegram(agent):
                     msg = upd.get("message", {}) or upd.get("edited_message", {})
                     chat = str(msg.get("chat", {}).get("id", ""))
                     text = msg.get("text", "").strip().lower()
-                    if chat != CHAT_ID:
-                        continue
+                    if chat != CHAT_ID: continue
                     if text == "/status":
                         agent.send_telegram(
                             f"📊 STATUS\n\n"
-                            f"📅 Last API: {agent.last_api_period}\n"
-                            f"📈 Signals: {agent.total_signals}\n"
-                            f"✅ Wins: {agent.total_wins} | ❌ Losses: {agent.total_losses}\n"
-                            f"💰 Dalarm Step: {agent.dalarm_step}x\n"
-                            f"💰 Dalarm Bet: {agent.dalarm_bet_size}\n"
-                            f"⛔ SL Mode: {'YES' if agent.is_sl_mode else 'NO'}\n"
-                            f"💵 Profit: {agent.dalarm_profit:+.0f}"
+                            f"💰 Step: {agent.dalarm_step}x\n"
+                            f"💰 Bet: {agent.dalarm_bet_size}\n"
+                            f"⛔ SL: {'YES' if agent.is_sl_mode else 'NO'}\n"
+                            f"💵 Current Profit: {agent.dalarm_profit:+.0f}\n"
+                            f"📉 Max Float: {agent.dalarm_max_negative:.0f}"
                         )
                     elif text == "/reset":
                         with agent.lock:
                             agent.dalarm_bet_size = CONFIG['dalarm_base_bet']
                             agent.dalarm_step = 1
                             agent.dalarm_profit = 0.0
+                            agent.dalarm_max_negative = 0.0
                             agent.is_sl_mode = False
-                            agent.dalarm_total_wins = 0
-                            agent.dalarm_total_losses = 0
                         agent.send_telegram("🔄 Reset")
         except Exception as e:
             print(f"TG Poll Error: {e}", flush=True)
@@ -744,28 +621,16 @@ def poll_telegram(agent):
 
 
 def run_bot():
-    print("🤖 Bot Started (Dalarm Bet Style - FIXED)", flush=True)
+    print("🤖 Bot Started (Dalarm — WIN order fixed)", flush=True)
     agent = AdvancedAdaptiveEngine()
     threading.Thread(target=poll_telegram, args=(agent,), daemon=True).start()
     last_processed_period = None
     url = CONFIG['api_url']
     auth = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOiIxNzg3OTgxNTA5IiwibmJmIjoiMTc4Nzk4MTUwOSIsImV4cCI6IjE3ODc5ODMzMDkiLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL2V4cGlyYXRpb24iOiI4LzI5LzIwMjYgMTI6MzE2NDkgUE0iLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL3JvbGUiOiJBY2Nlc3NfVG9rZW4iLCJVc2VySWQiOiIxMDEyMjEzIiwiVXNlck5hbWUiOiI5NTk3NDA5MzkzNzAiLCJVc2VyUGhvdG8iOiI5IiwiTmlja05hbWUiOiJUaGV0R3lpIiwiQW1vdW50IjoiODcuMzAiLCJJbnRlZ3JhbCI6IjAiLCJMb2dpbk1hcmsiOiJINSIsImxvZ2luVGltZSI6IjgvMjkvMjAyNiAxMjowMTo0OSBQTSIsImxvZ2luSVBBZGRyZXNzIjoiNDUuNDEuMTA0LjI0MCIsImRiTnVtYmVyIjoiMCIsIklzdmFsaWRhdG9yIjoiMCIsIktleUNvZGUiOiIzMjMzMiIsImRva2VuVHlwZSI6IjJBY2Nlc3NfVG9rZW4iLCJob25lVHlpZSI6IjAiLCJVc2VyVHlwZSI6IjAiLCJVc2VyTmFtZ2UiOiIuIiwiaXNzIjoiand0SXNzdWVyIiwiYXVkIjoibG90dGVyeVRpY2tldCJ9.ZL0Y9gexUTCsKwWeZhCLAAw8AABEYJt0GnIzIviMG4g"
-    headers = {
-        "accept": "application/json, text/plain, */*",
-        "authorization": f"Bearer {auth}",
-        "content-type": "application/json;charset=UTF-8",
-        "origin": "https://6win598.com",
-        "referer": "https://6win598.com/",
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
+    headers = {"accept": "application/json, text/plain, */*", "authorization": f"Bearer {auth}", "content-type": "application/json;charset=UTF-8", "origin": "https://6win598.com", "referer": "https://6win598.com/", "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     while True:
         try:
-            payload = {
-                "pageSize": 10, "pageNo": 1, "typeId": 30, "language": 7,
-                "random": "036263f367384d418be07465793c8da8",
-                "signature": "55F4FD150F15F090B943374F3C9BE78B",
-                "timestamp": int(time.time())
-            }
+            payload = {"pageSize": 10, "pageNo": 1, "typeId": 30, "language": 7, "random": "036263f367384d418be07465793c8da8", "signature": "55F4FD150F15F090B943374F3C9BE78B", "timestamp": int(time.time())}
             res = requests.post(url, headers=headers, json=payload, timeout=5)
             if res.status_code != 200:
                 time.sleep(2)
