@@ -6,17 +6,25 @@ import threading
 import math
 import copy
 import numpy as np
-from collections import deque
+from collections import deque, Counter
 from flask import Flask
 
 # ==========================================
-# Telegram နဲ့ Supabase
+# Telegram & Supabase
 # ==========================================
 TELEGRAM_TOKEN = "8913070806:AAF3rP0zKJtofE-5KVesqcdoHzn7Go0avho"
 CHAT_ID = "-1004402480797"
 
 SUPABASE_URL = "https://msgzacekhrvlqkqgjvly.supabase.co"
 SUPABASE_KEY = "sb_publishable_bVJj1lqSAsIQ1kQ8Ae2vAQ_o3yCjDeA"
+
+# ==========================================
+# 🎨 COLOUR MAPPING
+# ==========================================
+COLOUR_MAP = {
+    0: "Violet+Red", 1: "Green", 2: "Red", 3: "Green", 4: "Red",
+    5: "Violet+Green", 6: "Red", 7: "Green", 8: "Red", 9: "Green",
+}
 
 # ==========================================
 # 🧠 CONFIGURATION
@@ -26,48 +34,169 @@ CONFIG = {
     "q_epsilon_decay": 0.999, "q_min_epsilon": 0.02,
     "window_size": 60, "short_ma_period": 10, "long_ma_period": 30,
     "min_data_before_signal": 15,
-    "min_confidence_for_trade": 0.65, "chop_filter_threshold": 0.6,
-    "trend_confirmation": 2, "min_agreement": 4,
-    "adaptive_weight_alpha": 0.2, "rolling_accuracy_window": 50,
+    "min_confidence_for_trade": 0.60,
+    "chop_filter_threshold": 0.6,
+    "trend_confirmation": 2,
+    "min_agreement": 4,
+    "adaptive_weight_alpha": 0.2,
+    "rolling_accuracy_window": 50,
     "api_url": "https://6lotteryapi.com/api/webapi/GetNoaverageEmerdList",
     "lr_lr": 0.01, "lr_epochs": 3,
-    "dalarm_base_bet": 1000,
-    "dalarm_increment": 1000,
-    "dalarm_min_bet": 1000,
-    "dalarm_sl_step": 4,
-    "dalarm_payout": 0.9,
-    "dalarm_currency": "🇲🇲",
+    "dalarm_base_bet": 1000, "dalarm_increment": 1000,
+    "dalarm_min_bet": 1000, "dalarm_sl_step": 4,
+    "dalarm_payout": 0.9, "dalarm_currency": "🇲🇲",
     "profit_reset_threshold": 100000,
+    "dynamic_threshold_enabled": True,
+    "min_threshold": 0.55, "max_threshold": 0.65,
+    # 🆕 Test Data Collection
+    "test_every_n_rounds": 100,  # Every 100 rounds — Test Run
 }
 
 app = Flask(__name__)
 global_agent = None
 
 
-@app.route('/')
-def home():
-    global global_agent
-    if not global_agent:
-        return "<h3>🤖 Bot is starting...</h3>"
-    try:
-        total = int(global_agent.total_wins) + int(global_agent.total_losses)
-        wr = (int(global_agent.total_wins) / total * 100) if total > 0 else 0.0
-    except:
-        wr = 0.0
-    return f"""
-    <h2>📊 WINGO BOT REPORT (DALARM STYLE)</h2>
-    <p><b>Status:</b> {'PAUSED 🛑' if global_agent.is_paused else 'RUNNING 🟢'}</p>
-    <p><b>Dalarm Step:</b> Step {global_agent.dalarm_step}</p>
-    <p><b>Dalarm Bet Size:</b> {global_agent.dalarm_bet_size}</p>
-    <p><b>SL Mode:</b> {'YES ⛔' if global_agent.is_sl_mode else 'NO ✅'}</p>
-    <p><b>SL Entry Bet:</b> {global_agent.dalarm_sl_entry_bet}</p>
-    <p><b>Current Profit:</b> {global_agent.dalarm_profit:+.0f}</p>
-    <p><b>Max Float:</b> {global_agent.dalarm_max_negative:.0f}</p>
-    <p><b>Max Bet Size:</b> {global_agent.dalarm_max_bet_size}</p>
-    <p><b>Total Rounds (Cycle):</b> {global_agent.dalarm_total_rounds}</p>
-    """
+# ==========================================
+# 🧪 TEST SCRIPT — PRNG Analysis
+# ==========================================
+class PRNGTester:
+    """Test Wingo PRNG vulnerabilities"""
+
+    def __init__(self, agent):
+        self.agent = agent
+
+    def test_period_sum(self, data):
+        """Test: Period sum modulo 10"""
+        matches = 0
+        for item in data:
+            period_sum = sum(int(d) for d in str(item["period"])) % 10
+            if period_sum == item["digit"]:
+                matches += 1
+        return matches / len(data) if data else 0
+
+    def test_lcg(self, digits):
+        """Test: LCG (Linear Congruential Generator)"""
+        if len(digits) < 10:
+            return None, 0
+        best = None
+        max_hits = 0
+        total = len(digits) - 1
+
+        for a in range(1, 10):
+            for c in range(0, 10):
+                hits = 0
+                for i in range(total):
+                    predicted = (a * digits[i] + c) % 10
+                    if predicted == digits[i + 1]:
+                        hits += 1
+                if hits > max_hits:
+                    max_hits = hits
+                    best = (a, c)
+        return best, max_hits / total if total > 0 else 0
+
+    def test_offset(self, data):
+        """Test: Period last digit + offset"""
+        results = []
+        for offset in range(10):
+            matches = 0
+            for item in data:
+                last_digit = int(str(item["period"])[-1])
+                predicted = (last_digit + offset) % 10
+                if predicted == item["digit"]:
+                    matches += 1
+            results.append({
+                "offset": offset,
+                "accuracy": matches / len(data) if data else 0
+            })
+        return sorted(results, key=lambda x: x["accuracy"], reverse=True)
+
+    def test_multi_offset(self, data):
+        """Test: Period last 2 digits + offset"""
+        results = []
+        for offset in range(10):
+            matches = 0
+            for item in data:
+                p = str(item["period"])
+                last_2 = int(p[-2:])
+                predicted = (last_2 + offset) % 10
+                if predicted == item["digit"]:
+                    matches += 1
+            results.append({
+                "offset": offset,
+                "accuracy": matches / len(data) if data else 0
+            })
+        return sorted(results, key=lambda x: x["accuracy"], reverse=True)
+
+    def run_all_tests(self, data):
+        """Run all tests and return report"""
+        if len(data) < 50:
+            return "⏳ Not enough data (need 50+)"
+
+        digits = [item["digit"] for item in data]
+        total = len(data)
+
+        # Test 1: Period Sum
+        sum_acc = self.test_period_sum(data)
+
+        # Test 2: LCG
+        best_lcg, lcg_acc = self.test_lcg(digits)
+
+        # Test 3: Offset
+        offsets = self.test_offset(data)
+
+        # Test 4: Multi-Offset
+        multi_offsets = self.test_multi_offset(data)
+
+        # Build Report
+        report = (
+            f"🧪 <b>PRNG TEST REPORT</b>\n"
+            f"📊 Data: {total} rounds\n\n"
+            f"<b>Test 1 — Period Sum Mod 10:</b>\n"
+            f"  Accuracy: {sum_acc:.2%}\n"
+            f"  Random: 10%\n"
+            f"  Result: {'🔴 VULNERABLE' if sum_acc > 0.30 else '🟢 Random'}\n\n"
+            f"<b>Test 2 — LCG Brute Force:</b>\n"
+        )
+        if best_lcg:
+            report += (
+                f"  Best: a={best_lcg[0]}, c={best_lcg[1]}\n"
+                f"  Accuracy: {lcg_acc:.2%}\n"
+                f"  Result: {'🔴 VULNERABLE' if lcg_acc > 0.30 else '🟢 Random'}\n\n"
+            )
+        else:
+            report += f"  Not enough data\n\n"
+
+        report += (
+            f"<b>Test 3 — Last Digit Offset:</b>\n"
+            f"  Best Offset: {offsets[0]['offset']}\n"
+            f"  Accuracy: {offsets[0]['accuracy']:.2%}\n"
+            f"  Result: {'🔴 VULNERABLE' if offsets[0]['accuracy'] > 0.30 else '🟢 Random'}\n\n"
+            f"<b>Test 4 — Last 2 Digits Offset:</b>\n"
+            f"  Best Offset: {multi_offsets[0]['offset']}\n"
+            f"  Accuracy: {multi_offsets[0]['accuracy']:.2%}\n"
+            f"  Result: {'🔴 VULNERABLE' if multi_offsets[0]['accuracy'] > 0.30 else '🟢 Random'}\n\n"
+            f"<b>Verdict:</b>\n"
+        )
+
+        vulnerabilities = 0
+        if sum_acc > 0.30: vulnerabilities += 1
+        if lcg_acc > 0.30: vulnerabilities += 1
+        if offsets[0]['accuracy'] > 0.30: vulnerabilities += 1
+        if multi_offsets[0]['accuracy'] > 0.30: vulnerabilities += 1
+
+        if vulnerabilities == 0:
+            report += "🟢 No Vulnerability — Strong PRNG"
+        elif vulnerabilities <= 2:
+            report += f"🟡 {vulnerabilities} Weakness — Investigate"
+        else:
+            report += f"🔴 {vulnerabilities} Vulnerabilities — EXPLOITABLE"
+
+        return report
 
 
+# ==========================================
+# 📊 FEATURE ENGINEER
+# ==========================================
 class FeatureEngineer:
     @staticmethod
     def encode(r): return 1 if r == "Big" else 0
@@ -102,7 +231,7 @@ class FeatureEngineer:
         return 0.0
     @staticmethod
     def entropy(lst):
-        from collections import Counter
+        if not lst: return 0.0
         counts = Counter(lst)
         probs = [c / len(lst) for c in counts.values()]
         return -sum(p * math.log2(p) for p in probs if p > 0)
@@ -178,7 +307,10 @@ class LogisticRegression:
     def predict(self, X): return self.forward(np.array(X).reshape(1, -1))[0][0]
 
 
-class AdvancedAdaptiveEngine:
+# ==========================================
+# 🎯 V9.0 ENGINE
+# ==========================================
+class V9Engine:
     def __init__(self):
         global global_agent
         global_agent = self
@@ -191,10 +323,30 @@ class AdvancedAdaptiveEngine:
         self.last_predictions_by_model = {}
         self.last_feature_vector = None
         self.last_confidence = None
+        self.last_digit = None
         self.total_signals = 0
         self.total_wins = 0
         self.total_losses = 0
         self.prediction_history = deque(maxlen=CONFIG['rolling_accuracy_window'])
+        self.step_signals = {1: 0, 2: 0, 3: 0, 4: 0}
+        self.step_wins = {1: 0, 2: 0, 3: 0, 4: 0}
+
+        # 🆕 Data History (for Test)
+        self.full_history = []  # ← Persistent — for testing
+        self.digit_history = deque(maxlen=200)
+        self.colour_history = deque(maxlen=200)
+        self.odd_even_history = deque(maxlen=200)
+
+        MODEL_NAMES = [
+            "Markov", "Pattern", "Streak", "QLearning", "Statistical",
+            "MeanReversion", "Momentum", "RegimeAware", "LogisticReg",
+            "DigitModel", "ColourModel", "OddEvenModel"
+        ]
+        self.model_correct = {k: 0 for k in MODEL_NAMES}
+        self.model_total = {k: 0 for k in MODEL_NAMES}
+        self.model_weights = {k: 1.0 for k in MODEL_NAMES}
+        self.model_accuracy = {k: deque(maxlen=CONFIG['rolling_accuracy_window']) for k in MODEL_NAMES}
+
         self.q_lr = CONFIG['q_lr']
         self.q_discount = CONFIG['q_discount']
         self.epsilon = CONFIG['q_epsilon']
@@ -203,13 +355,6 @@ class AdvancedAdaptiveEngine:
         self.lr_train_X = deque(maxlen=200)
         self.lr_train_y = deque(maxlen=200)
         self.lr_loss = 0.0
-        self.model_weights = {
-            "Markov": 1.0, "Pattern": 1.0, "Streak": 1.0,
-            "QLearning": 1.0, "Statistical": 1.0,
-            "MeanReversion": 1.0, "Momentum": 1.0,
-            "RegimeAware": 1.0, "LogisticReg": 1.0
-        }
-        self.model_accuracy = {k: deque(maxlen=CONFIG['rolling_accuracy_window']) for k in self.model_weights}
         self.regime = "unknown"
         self.is_paused = False
 
@@ -220,14 +365,14 @@ class AdvancedAdaptiveEngine:
         self.dalarm_max_negative = 0.0
         self.is_sl_mode = False
         self.dalarm_sl_entry_bet = CONFIG['dalarm_base_bet']
-
-        # Trackers
         self.dalarm_max_bet_size = CONFIG['dalarm_base_bet']
         self.dalarm_total_rounds = 0
         self.profit_reset_threshold = CONFIG['profit_reset_threshold']
 
-    def get_current_multiplier(self):
-        return self.dalarm_step
+        # 🆕 Tester
+        self.tester = PRNGTester(self)
+
+    def get_current_multiplier(self): return self.dalarm_step
 
     def send_telegram(self, message):
         def _send():
@@ -235,10 +380,8 @@ class AdvancedAdaptiveEngine:
             for attempt in range(3):
                 try:
                     res = requests.post(url, json={"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=15)
-                    print(f"TG Send: {res.status_code}", flush=True)
                     if res.status_code == 200: return
                 except Exception as e:
-                    print(f"TG Error (attempt {attempt+1}/3): {e}", flush=True)
                     time.sleep(2)
         threading.Thread(target=_send, daemon=True).start()
 
@@ -263,6 +406,7 @@ class AdvancedAdaptiveEngine:
     def update_epsilon(self):
         self.epsilon = max(CONFIG['q_min_epsilon'], self.epsilon * CONFIG['q_epsilon_decay'])
 
+    # Base Models
     def markov_predict(self, lst):
         if len(lst) < 4: return "Big"
         transitions = {}
@@ -382,8 +526,73 @@ class AdvancedAdaptiveEngine:
             out = self.lr_model.predict(vec)
             return "Big" if out > 0.5 else "Small", out
         except Exception as e:
-            print(f"LR Error: {e}", flush=True)
             return "Big", 0.5
+
+    def digit_model_predict(self):
+        if len(self.digit_history) < 20:
+            return "Big", 0.5
+        digit_counts = Counter(list(self.digit_history)[-50:])
+        last_digit = self.digit_history[-1]
+        transitions = {}
+        hist = list(self.digit_history)
+        for i in range(len(hist) - 1):
+            if hist[i] == last_digit:
+                transitions[hist[i + 1]] = transitions.get(hist[i + 1], 0) + 1
+        if transitions:
+            predicted_digit = max(transitions, key=transitions.get)
+            total = sum(transitions.values())
+            conf = transitions[predicted_digit] / total
+            return ("Big" if predicted_digit >= 5 else "Small"), min(conf * 2, 0.95)
+        most_common = digit_counts.most_common(1)[0][0]
+        return ("Big" if most_common >= 5 else "Small"), 0.5
+
+    def colour_model_predict(self):
+        if len(self.colour_history) < 20:
+            return "Big", 0.5
+        last_colour = self.colour_history[-1]
+        transitions = {}
+        hist = list(self.colour_history)
+        for i in range(len(hist) - 1):
+            if hist[i] == last_colour:
+                transitions[hist[i + 1]] = transitions.get(hist[i + 1], 0) + 1
+        if transitions:
+            predicted_colour = max(transitions, key=transitions.get)
+            matching_digits = []
+            for i, colour in enumerate(self.colour_history):
+                if colour == predicted_colour and i < len(self.digit_history):
+                    matching_digits.append(self.digit_history[i])
+            if matching_digits:
+                big_count = sum(1 for d in matching_digits if d >= 5)
+                small_count = len(matching_digits) - big_count
+                if big_count > small_count:
+                    return "Big", 0.5 + (big_count / len(matching_digits) - 0.5) * 0.5
+                elif small_count > big_count:
+                    return "Small", 0.5 + (small_count / len(matching_digits) - 0.5) * 0.5
+        return "Big", 0.5
+
+    def odd_even_model_predict(self):
+        if len(self.odd_even_history) < 20:
+            return "Big", 0.5
+        matching_digits = []
+        for i, oe in enumerate(self.odd_even_history):
+            if oe == self.odd_even_history[-1] and i < len(self.digit_history):
+                matching_digits.append(self.digit_history[i])
+        if matching_digits:
+            big_count = sum(1 for d in matching_digits if d >= 5)
+            small_count = len(matching_digits) - big_count
+            if big_count > small_count:
+                return "Big", 0.5 + (big_count / len(matching_digits) - 0.5) * 0.4
+            elif small_count > big_count:
+                return "Small", 0.5 + (small_count / len(matching_digits) - 0.5) * 0.4
+        return "Big", 0.5
+
+    def get_digit_frequency(self):
+        if not self.digit_history: return {}
+        return dict(Counter(list(self.digit_history)))
+
+    def get_colour_frequency(self):
+        if not self.colour_history: return {}
+        return dict(Counter(list(self.colour_history)))
 
     def check_volatility(self, lst):
         if len(lst) < 6: return False, 0.0
@@ -397,12 +606,21 @@ class AdvancedAdaptiveEngine:
         for name, pred in self.last_predictions_by_model.items():
             correct = 1 if pred == actual_result else 0
             self.model_accuracy[name].append(correct)
+            self.model_total[name] += 1
+            if correct: self.model_correct[name] += 1
             if len(self.model_accuracy[name]) >= 5:
                 acc = sum(list(self.model_accuracy[name])[-5:]) / 5.0
                 old_w = self.model_weights[name]
                 target = acc * 3.0
                 new_w = CONFIG['adaptive_weight_alpha'] * target + (1 - CONFIG['adaptive_weight_alpha']) * old_w
                 self.model_weights[name] = max(0.3, min(5.0, new_w))
+
+    def get_model_accuracy(self):
+        acc = {}
+        for name in self.model_correct:
+            total = self.model_total[name]
+            acc[name] = self.model_correct[name] / total if total > 0 else 0.5
+        return acc
 
     def get_consensus(self, window_list, state_key=None):
         if state_key is None: state_key = self.get_state_key()
@@ -416,36 +634,61 @@ class AdvancedAdaptiveEngine:
         m8 = self.regime_aware_predict(window_list)
         features, _ = FeatureEngineer.extract(window_list)
         lr_pred, lr_conf = self.lr_predict(features)
-        predictions = {"Markov": m1, "Pattern": m2, "Streak": m3, "QLearning": m4, "Statistical": m5, "MeanReversion": m6, "Momentum": m7, "RegimeAware": m8, "LogisticReg": lr_pred}
-        self.last_predictions_by_model = predictions
+        digit_pred, digit_conf = self.digit_model_predict()
+        colour_pred, colour_conf = self.colour_model_predict()
+        oe_pred, oe_conf = self.odd_even_model_predict()
+
+        predictions = {
+            "Markov": m1, "Pattern": m2, "Streak": m3,
+            "QLearning": m4, "Statistical": m5,
+            "MeanReversion": m6, "Momentum": m7,
+            "RegimeAware": m8,
+            "DigitModel": digit_pred,
+            "ColourModel": colour_pred,
+            "OddEvenModel": oe_pred,
+        }
+        self.last_predictions_by_model = {**predictions, "LogisticReg": lr_pred}
+
         scores = {"Big": 0.0, "Small": 0.0}
-        for name, pred in predictions.items(): scores[pred] += self.model_weights.get(name, 1.0)
-        if lr_pred == "Big": scores["Big"] += lr_conf * 2.0
-        else: scores["Small"] += (1 - lr_conf) * 2.0
-        total_w = sum(self.model_weights.values()) + 2.0
+        for name, pred in predictions.items():
+            scores[pred] += self.model_weights.get(name, 1.0)
+
+        lr_weight = self.model_weights.get("LogisticReg", 1.0)
+        if lr_pred == "Big": scores["Big"] += lr_weight * lr_conf
+        else: scores["Small"] += lr_weight * (1 - lr_conf)
+
+        total_w = sum(self.model_weights.get(name, 1.0) for name in predictions) + lr_weight
         confidence = max(scores["Big"], scores["Small"]) / total_w
         predicted = "Big" if scores["Big"] >= scores["Small"] else "Small"
         agreement_count = sum(1 for pred in predictions.values() if pred == predicted)
+
         if agreement_count < CONFIG['min_agreement']:
-            return predicted, f"⏳ Wait ({agreement_count}/9)", confidence
+            return predicted, f"⏳ Wait ({agreement_count}/11)", confidence
+
         regime, regime_strength = self.detect_market_regime(window_list)
         self.regime = regime
         if regime == "trending":
             if predicted != window_list[-1]: confidence *= 0.7
         elif regime == "choppy":
             if predicted == window_list[-1]: confidence *= 0.7
+
         self.last_confidence = confidence
-        is_choppy, flip = self.check_volatility(window_list)
-        note = f" | {regime.capitalize()}"
-        return predicted, f"🎯 Big={scores['Big']:.1f}/Small={scores['Small']:.1f} | {agreement_count}/9 | {regime}{note}", confidence
+        return predicted, f"🎯 {predicted}", confidence
 
     def get_rolling_accuracy(self):
         if not self.prediction_history: return 0.0
         return sum(self.prediction_history) / len(self.prediction_history)
 
-    # ==========================================
-    # DALARM
-    # ==========================================
+    def get_dynamic_threshold(self):
+        if not CONFIG['dynamic_threshold_enabled']:
+            return CONFIG['min_confidence_for_trade']
+        if len(self.prediction_history) < 20:
+            return CONFIG['min_confidence_for_trade']
+        recent_wr = self.get_rolling_accuracy()
+        if recent_wr >= 0.55: return CONFIG['min_threshold']
+        elif recent_wr >= 0.50: return 0.60
+        else: return CONFIG['max_threshold']
+
     def get_dalarm_bet_display(self):
         if self.is_sl_mode: return "⛔ SL (No Bet)"
         return f"{CONFIG['dalarm_currency']} {self.dalarm_bet_size}"
@@ -457,12 +700,9 @@ class AdvancedAdaptiveEngine:
         return f"💰 Current Profit: {profit_str}\n📉 Max Float: {max_float_str}"
 
     def update_dalarm_bet(self, won, api_period=None):
-        # Track max bet size
         if self.dalarm_bet_size > self.dalarm_max_bet_size:
             self.dalarm_max_bet_size = self.dalarm_bet_size
-        # Track total rounds
         self.dalarm_total_rounds += 1
-
         if self.is_sl_mode:
             if won:
                 self.is_sl_mode = False
@@ -473,7 +713,6 @@ class AdvancedAdaptiveEngine:
             if self.dalarm_profit < self.dalarm_max_negative:
                 self.dalarm_max_negative = self.dalarm_profit
             return
-        
         if won:
             profit = self.dalarm_bet_size * CONFIG['dalarm_payout']
             self.dalarm_profit += profit
@@ -488,92 +727,88 @@ class AdvancedAdaptiveEngine:
             else:
                 self.dalarm_step += 1
                 self.dalarm_bet_size += CONFIG['dalarm_increment']
-        
         if self.dalarm_profit < self.dalarm_max_negative:
             self.dalarm_max_negative = self.dalarm_profit
 
-    # ==========================================
-    # PROFIT RESET — Step မထိ
-    # ==========================================
     def check_profit_reset(self):
-        """Check if profit reached threshold. Report + Reset."""
         if self.dalarm_profit >= self.profit_reset_threshold:
             report = (
-                f"📊 <b>REPORT — Profit Reached +{self.profit_reset_threshold}</b>\n\n"
-                f"💰 Final Profit: <b>+{self.dalarm_profit:.0f}</b>\n"
-                f"📉 Max Float: <b>{self.dalarm_max_negative:.0f}</b>\n"
-                f"📈 Max Bet Size: <b>{self.dalarm_max_bet_size}</b>\n"
-                f"🎯 Total Rounds: <b>{self.dalarm_total_rounds}</b>\n\n"
-                f"🔄 <b>Auto Reset!</b>\n"
-                f"💰 Starting Fresh from 1000"
+                f"📊 <b>REPORT — Profit +{self.profit_reset_threshold}</b>\n"
+                f"💰 Profit: +{self.dalarm_profit:.0f}\n"
+                f"📉 Max Float: {self.dalarm_max_negative:.0f}\n"
+                f"📈 Max Bet: {self.dalarm_max_bet_size}\n"
+                f"🎯 Rounds: {self.dalarm_total_rounds}\n\n"
+                f"🔄 Auto Reset!"
             )
-            
-            # ✅ Reset — Step ကို မထိ
             self.dalarm_profit = 0.0
             self.dalarm_max_negative = 0.0
             self.dalarm_max_bet_size = CONFIG['dalarm_base_bet']
             self.dalarm_bet_size = CONFIG['dalarm_base_bet']
             self.dalarm_total_rounds = 0
-            # ✅ Step, is_sl_mode, sl_entry_bet — မထိ
-            
             return report
         return None
 
-    # ==========================================
-    # 🎯 MAIN LOGIC
-    # ==========================================
-    def process_api_result(self, api_period, api_result):
+    def process_api_result(self, api_period, api_result, digit=None):
         with self.lock:
-            self._process_api_result_internal(api_period, api_result)
+            self._process_api_result_internal(api_period, api_result, digit)
 
-    def _process_api_result_internal(self, api_period, api_result):
+    def _process_api_result_internal(self, api_period, api_result, digit=None):
         self.last_api_period = str(api_period)
         try: api_period_int = int(api_period)
         except (ValueError, TypeError): return
         notifications = []
 
-        # Step 1: Previous Prediction
+        # 🆕 Track Digit
+        if digit is not None:
+            self.last_digit = digit
+            self.digit_history.append(digit)
+            self.colour_history.append(COLOUR_MAP.get(digit, "Unknown"))
+            self.odd_even_history.append("Odd" if digit % 2 == 1 else "Even")
+
+            # 🆕 Persistent history for Test
+            self.full_history.append({
+                "period": api_period,
+                "digit": digit,
+                "bigsmall": api_result,
+                "colour": COLOUR_MAP.get(digit, "Unknown"),
+                "timestamp": int(time.time())
+            })
+
+        # 🆕 Auto Test — every 100 rounds
+        if len(self.full_history) > 0 and len(self.full_history) % CONFIG['test_every_n_rounds'] == 0:
+            test_report = self.tester.run_all_tests(self.full_history)
+            notifications.append(test_report)
+
         if self.active_prediction is not None and self.last_state is not None:
             predicted = self.active_prediction
             is_correct = (predicted.lower() == api_result.lower())
             self.prediction_history.append(1 if is_correct else 0)
-
+            current_step = min(self.dalarm_step, 4)
+            self.step_signals[current_step] += 1
+            if is_correct: self.step_wins[current_step] += 1
             reward = 5.0 if is_correct else -5.0
             self.update_q_table(self.last_state, predicted, reward)
             self.update_model_weights(api_result)
-
             if self.last_feature_vector is not None:
                 self.lr_train_X.append(self.last_feature_vector)
                 self.lr_train_y.append([FeatureEngineer.encode(api_result)])
-
-            # ✅ DALARM UPDATE — Step WIN ရင် Step 1 ဖြစ်သွား
             self.update_dalarm_bet(is_correct, api_period)
-
+            if is_correct: self.total_wins += 1
+            else: self.total_losses += 1
             if is_correct:
-                self.total_wins += 1
-            else:
-                self.total_losses += 1
-
-            if is_correct:
-                result_period_short = str(api_period)[-3:] if len(str(api_period)) >= 3 else str(api_period)
-                notifications.append(f"🔥 WIN — Period {result_period_short} 🔥")
-
+                short = str(api_period)[-3:] if len(str(api_period)) >= 3 else str(api_period)
+                notifications.append(f"🔥 WIN — Period {short} 🔥")
             self.active_prediction = None
             self.last_state = None
             self.update_epsilon()
-
-            # ✅ PROFIT RESET CHECK — Step ကို မထိ
             reset_report = self.check_profit_reset()
-            if reset_report:
-                notifications.append(reset_report)
+            if reset_report: notifications.append(reset_report)
 
-        # Step 2: Window
         self.window.append(api_result)
         if len(self.window) > 0:
             features, _ = FeatureEngineer.extract(list(self.window))
             self.last_feature_vector = FeatureEngineer.to_vector(features)
 
-        # Step 3: Signal
         next_period_full = str(api_period_int + 1)
         self.next_signal_period = next_period_full
         next_period_short = next_period_full[-3:] if len(next_period_full) >= 3 else next_period_full
@@ -582,8 +817,9 @@ class AdvancedAdaptiveEngine:
             notifications.append(f"💖Period {next_period_short}\n⏳ Collecting... {len(self.window)}/{CONFIG['min_data_before_signal']}")
         else:
             prediction, regime, confidence = self.get_consensus(list(self.window))
-            if confidence < CONFIG['min_confidence_for_trade']:
-                notifications.append(f"💖Period {next_period_short}\n⏭️ SKIP (Conf: {confidence:.1%})")
+            threshold = self.get_dynamic_threshold()
+            if confidence < threshold:
+                notifications.append(f"💖Period {next_period_short}\n⏭️ SKIP (Conf: {confidence:.1%} < {threshold:.1%})")
                 self.active_prediction = None
             else:
                 self.last_state = self.get_state_key()
@@ -591,6 +827,10 @@ class AdvancedAdaptiveEngine:
                 self.total_signals += 1
                 bet_display = self.get_dalarm_bet_display()
                 profit_display = self.get_dalarm_profit_display()
+                colour_display = ""
+                if self.last_digit is not None:
+                    colour_display = f"\n🎨 Last: {self.last_digit} ({COLOUR_MAP.get(self.last_digit, '?')})"
+
                 notifications.append(
                     f"💖Period {next_period_short}\n"
                     f"🎯 SIGNAL → {prediction.capitalize()}\n"
@@ -599,6 +839,7 @@ class AdvancedAdaptiveEngine:
                     f"📈 Win Rate: {self.get_rolling_accuracy():.0%}\n"
                     f"{bet_display}\n"
                     f"{profit_display}"
+                    f"{colour_display}"
                 )
 
         for msg in notifications:
@@ -622,16 +863,33 @@ def poll_telegram(agent):
                     chat = str(msg.get("chat", {}).get("id", ""))
                     text = msg.get("text", "").strip().lower()
                     if chat != CHAT_ID: continue
+
                     if text == "/status":
                         agent.send_telegram(
-                            f"📊 STATUS\n\n"
-                            f"💰 Step: {agent.dalarm_step}x\n"
-                            f"💰 Bet: {agent.dalarm_bet_size}\n"
-                            f"⛔ SL: {'YES' if agent.is_sl_mode else 'NO'}\n"
-                            f"💵 Current Profit: {agent.dalarm_profit:+.0f}\n"
-                            f"📉 Max Float: {agent.dalarm_max_negative:.0f}\n"
-                            f"📈 Max Bet Size: {agent.dalarm_max_bet_size}\n"
-                            f"🎯 Rounds: {agent.dalarm_total_rounds}"
+                            f"📊 STATUS (V9.0 + PRNG Test)\n\n"
+                            f"💰 Step: {agent.dalarm_step}x | Bet: {agent.dalarm_bet_size}\n"
+                            f"💵 Profit: {agent.dalarm_profit:+.0f}\n"
+                            f"📊 Signals: {agent.total_signals}\n"
+                            f"📈 WR: {agent.get_rolling_accuracy():.1%}\n"
+                            f"🔬 Data Collected: {len(agent.full_history)}"
+                        )
+                    elif text == "/metrics":
+                        acc = agent.get_model_accuracy()
+                        acc_str = "\n".join([f"  {k}: {v:.2%}" for k, v in acc.items()])
+                        agent.send_telegram(f"📊 <b>METRICS</b>\n\n{acc_str}")
+                    elif text == "/test":
+                        # 🆕 Manual Test
+                        if len(agent.full_history) >= 50:
+                            report = agent.tester.run_all_tests(agent.full_history)
+                            agent.send_telegram(report)
+                        else:
+                            agent.send_telegram(f"⏳ Need 50+ data. Have {len(agent.full_history)}.")
+                    elif text == "/data":
+                        # 🆕 Show Data Count
+                        agent.send_telegram(
+                            f"📊 <b>DATA STATUS</b>\n"
+                            f"Total: {len(agent.full_history)}\n"
+                            f"Next Test: {CONFIG['test_every_n_rounds'] - (len(agent.full_history) % CONFIG['test_every_n_rounds'])} rounds"
                         )
                     elif text == "/reset":
                         with agent.lock:
@@ -650,8 +908,8 @@ def poll_telegram(agent):
 
 
 def run_bot():
-    print("🤖 Bot Started (Dalarm — Profit Reset)", flush=True)
-    agent = AdvancedAdaptiveEngine()
+    print("🤖 Bot Started (V9.0 + PRNG Test)", flush=True)
+    agent = V9Engine()
     threading.Thread(target=poll_telegram, args=(agent,), daemon=True).start()
     last_processed_period = None
     url = CONFIG['api_url']
@@ -678,10 +936,11 @@ def run_bot():
             raw_period = str(raw_period)
             number = int(number)
             api_result = "Big" if number >= 5 else "Small"
+            digit = number
             if raw_period != last_processed_period:
                 last_processed_period = raw_period
-                print(f"📥 API: Period {raw_period} → {api_result}", flush=True)
-                agent.process_api_result(raw_period, api_result)
+                print(f"📥 API: Period {raw_period} → {api_result} (Digit {digit})", flush=True)
+                agent.process_api_result(raw_period, api_result, digit)
         except Exception as e:
             print(f"Main Loop Error: {e}", flush=True)
         time.sleep(2)
