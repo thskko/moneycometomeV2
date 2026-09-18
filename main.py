@@ -22,31 +22,42 @@ SUPABASE_KEY = "sb_publishable_bVJj1lqSAsIQ1kQ8Ae2vAQ_o3yCjDeA"
 # 🧠 CONFIGURATION
 # ==========================================
 CONFIG = {
+    # Q-Learning
     "q_lr": 0.45,
     "q_discount": 0.95,
     "q_epsilon": 0.10,
     "q_epsilon_decay": 0.999,
     "q_min_epsilon": 0.02,
-    "max_martingale_step": 999,
-    "base_bet": 1.0,
-    "stop_loss_pct": 0.30,
-    "take_profit_pct": 0.50,
-    "use_kelly": True,
-    "kelly_fraction": 0.25,
-    "rolling_accuracy_window": 50,
-    "anti_martingale_after_win": 3,
+
+    # Window & Features
     "window_size": 60,
     "short_ma_period": 10,
     "long_ma_period": 30,
+    "min_data_before_signal": 15,
+
+    # Signal Filtering
     "min_confidence_for_trade": 0.65,
     "chop_filter_threshold": 0.6,
     "trend_confirmation": 2,
+    "min_agreement": 4,
+    "adaptive_weight_alpha": 0.2,
+    "rolling_accuracy_window": 50,
+
+    # API
     "api_url": "https://6lotteryapi.com/api/webapi/GetNoaverageEmerdList",
     "lr_lr": 0.01,
     "lr_epochs": 3,
-    "min_data_before_signal": 15,
-    "min_agreement": 4,
-    "adaptive_weight_alpha": 0.2,
+
+    # ==========================================
+    # 🆕 DALARM BET STYLE
+    # ==========================================
+    "dalarm_base_bet": 1000,       # Start bet
+    "dalarm_increment": 1000,      # LOSE → +1000, WIN → -1000
+    "dalarm_min_bet": 1000,        # Minimum
+    "dalarm_sl_step": 4,           # Step 4+ → SL mode (bet မပို့)
+    "dalarm_sl_reset_step": 1,     # Step 1 ရောက်ရင် resume
+    "dalarm_payout": 0.9,          # Win payout = 0.9x (1.9x total)
+    "dalarm_currency": "🇲🇲",
 }
 
 app = Flask(__name__)
@@ -64,15 +75,15 @@ def home():
     except:
         wr = 0.0
     return f"""
-    <h2>📊 WINGO BOT REPORT</h2>
+    <h2>📊 WINGO BOT REPORT (DALARM STYLE)</h2>
     <p><b>Status:</b> {'PAUSED 🛑' if global_agent.is_paused else 'RUNNING 🟢'}</p>
     <p><b>Last API Period:</b> {global_agent.last_api_period}</p>
-    <p><b>Next Signal Period:</b> {global_agent.next_signal_period}</p>
     <p><b>Total Signals:</b> {global_agent.total_signals}</p>
-    <p><b>Wins:</b> {global_agent.total_wins} | <b>Losses:</b> {global_agent.total_losses}</p>
     <p><b>Win Rate:</b> {wr:.2f}%</p>
     <p><b>Current Step:</b> Step {global_agent.current_step}</p>
-    <p><b>Bankroll:</b> {global_agent.bankroll}</p>
+    <p><b>Current Bet Size:</b> {global_agent.dalarm_bet_size}</p>
+    <p><b>SL Mode:</b> {'YES ⛔' if global_agent.is_sl_mode else 'NO ✅'}</p>
+    <p><b>Dalarm Profit:</b> {global_agent.dalarm_profit:+.0f}</p>
     """
 
 
@@ -253,90 +264,42 @@ class AdvancedAdaptiveEngine:
             k: deque(maxlen=CONFIG['rolling_accuracy_window'])
             for k in self.model_weights
         }
-        self.bankroll = 1000.0
-        self.current_bet = CONFIG['base_bet']
-        self.kelly_bet = CONFIG['base_bet']
-        self.peak_bankroll = self.bankroll
-        self.max_drawdown = 0.0
-        self.total_profit = 0.0
-        self.current_step = 1
-        self.is_paused = False
-        self.paroli_counter = 0
-        self.use_paroli = False
-        self.trend_confirmations = 0
-        self.last_signal_direction = None
         self.regime = "unknown"
 
-    def _force_types(self):
-        try:
-            self.current_step = int(self.current_step)
-        except (ValueError, TypeError):
-            self.current_step = 1
-        try:
-            self.bankroll = float(self.bankroll)
-        except (ValueError, TypeError):
-            self.bankroll = 1000.0
-        try:
-            self.peak_bankroll = float(self.peak_bankroll)
-        except (ValueError, TypeError):
-            self.peak_bankroll = 1000.0
-        try:
-            self.current_bet = float(self.current_bet)
-        except (ValueError, TypeError):
-            self.current_bet = float(CONFIG['base_bet'])
-        try:
-            self.kelly_bet = float(self.kelly_bet)
-        except (ValueError, TypeError):
-            self.kelly_bet = float(CONFIG['base_bet'])
-        try:
-            self.total_profit = float(self.total_profit)
-        except (ValueError, TypeError):
-            self.total_profit = 0.0
-        try:
-            self.max_drawdown = float(self.max_drawdown)
-        except (ValueError, TypeError):
-            self.max_drawdown = 0.0
-        try:
-            self.total_signals = int(self.total_signals)
-        except (ValueError, TypeError):
-            self.total_signals = 0
-        try:
-            self.total_wins = int(self.total_wins)
-        except (ValueError, TypeError):
-            self.total_wins = 0
-        try:
-            self.total_losses = int(self.total_losses)
-        except (ValueError, TypeError):
-            self.total_losses = 0
-        try:
-            self.consecutive_wins = int(self.consecutive_wins)
-        except (ValueError, TypeError):
-            self.consecutive_wins = 0
-        try:
-            self.consecutive_losses = int(self.consecutive_losses)
-        except (ValueError, TypeError):
-            self.consecutive_losses = 0
-        try:
-            self.paroli_counter = int(self.paroli_counter)
-        except (ValueError, TypeError):
-            self.paroli_counter = 0
-        try:
-            self.trend_confirmations = int(self.trend_confirmations)
-        except (ValueError, TypeError):
-            self.trend_confirmations = 0
+        # ==========================================
+        # 🆕 DALARM BET STYLE — STATE
+        # ==========================================
+        self.dalarm_bet_size = CONFIG['dalarm_base_bet']  # Current bet size
+        self.dalarm_profit = 0.0                          # Total profit
+        self.is_sl_mode = False                           # SL mode flag
+        self.dalarm_total_bets = 0                        # Total bets placed
+        self.dalarm_total_wins = 0                        # Total wins
+        self.dalarm_total_losses = 0                      # Total losses
 
     def get_current_multiplier(self):
-        self._force_types()
-        return 2 ** max(0, self.current_step - 1)
+        return 1
 
+    # ==========================================
+    # 🆕 TELEGRAM with RETRY
+    # ==========================================
     def send_telegram(self, message):
         def _send():
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-            try:
-                res = requests.post(url, json={"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=5)
-                print(f"TG Send: {res.status_code}", flush=True)
-            except Exception as e:
-                print(f"TG Error: {e}", flush=True)
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    res = requests.post(
+                        url,
+                        json={"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"},
+                        timeout=15
+                    )
+                    print(f"TG Send: {res.status_code}", flush=True)
+                    if res.status_code == 200:
+                        return
+                except Exception as e:
+                    print(f"TG Error (attempt {attempt+1}/{max_retries}): {e}", flush=True)
+                    time.sleep(2)
+            print(f"TG FAILED after {max_retries} attempts", flush=True)
         threading.Thread(target=_send, daemon=True).start()
 
     def get_state_key(self, window=None):
@@ -364,6 +327,9 @@ class AdvancedAdaptiveEngine:
     def update_epsilon(self):
         self.epsilon = max(CONFIG['q_min_epsilon'], self.epsilon * CONFIG['q_epsilon_decay'])
 
+    # ==========================================
+    # 📊 ALL PREDICTION MODELS
+    # ==========================================
     def markov_predict(self, lst):
         if len(lst) < 4:
             return "Big"
@@ -579,79 +545,82 @@ class AdvancedAdaptiveEngine:
         self.last_confidence = confidence
         is_choppy, flip = self.check_volatility(window_list)
         note = f" | {regime.capitalize()}"
-        if self.last_signal_direction == predicted:
-            self.trend_confirmations += 1
-        else:
-            self.trend_confirmations = 1
-            self.last_signal_direction = predicted
-        if is_choppy and self.trend_confirmations < CONFIG['trend_confirmation']:
-            return predicted, f"⏳ Wait ({self.trend_confirmations}/{CONFIG['trend_confirmation']}){note}", confidence
+        if self.last_signal_direction_check(predicted):
+            pass
         return predicted, f"🎯 Big={scores['Big']:.1f}/Small={scores['Small']:.1f} | {agreement_count}/9 | {regime}{note}", confidence
+
+    def last_signal_direction_check(self, predicted):
+        return False
 
     def get_rolling_accuracy(self):
         if not self.prediction_history:
             return 0.0
         return sum(self.prediction_history) / len(self.prediction_history)
 
-    def should_trade(self):
-        """Signal bot — always trade. No pause."""
-        return True
+    # ==========================================
+    # 🆕 DALARM BET STYLE — CORE LOGIC
+    # ==========================================
+    def get_dalarm_bet_display(self):
+        """Return bet display string (empty if SL mode)."""
+        if self.is_sl_mode:
+            return "⛔ SL (No Bet)"
+        return f"{CONFIG['dalarm_currency']} {self.dalarm_bet_size}"
 
-    def update_bankroll(self, won):
-        self._force_types()
-        multiplier = 2 ** max(0, self.current_step - 1)
-        multiplier = float(multiplier)
+    def get_dalarm_profit_display(self):
+        """Return profit display string."""
+        if self.dalarm_profit >= 0:
+            return f"💰 Profit: +{self.dalarm_profit:.0f}"
+        else:
+            return f"💰 Profit: {self.dalarm_profit:.0f}"
+
+    def update_dalarm_bet(self, won):
+        """Update dalarm bet size and profit."""
+        if self.is_sl_mode:
+            # SL mode — bet မလောင်း
+            # WIN ဖြစ်ရင် step 1 ပြန်
+            if won:
+                self.is_sl_mode = False
+                # Step 1 ရောက်ပြီ — လက်ရှိ bet size ကို ထားရှိ
+                # ဒါပေမယ့် WIN ဖြစ်တဲ့အတွက် 1000 လျော့
+                self.dalarm_bet_size = max(
+                    CONFIG['dalarm_min_bet'],
+                    self.dalarm_bet_size - CONFIG['dalarm_increment']
+                )
+            return
+        
+        # Normal betting
         if won:
-            profit = float(self.current_bet) * multiplier * 0.9
-            self.bankroll = float(self.bankroll) + float(profit)
-            self.total_profit = float(self.total_profit) + float(profit)
-            self.consecutive_wins = int(self.consecutive_wins) + 1
-            self.consecutive_losses = 0
+            # WIN → profit တိုး
+            profit = self.dalarm_bet_size * CONFIG['dalarm_payout']
+            self.dalarm_profit += profit
+            # Bet size လျော့
+            self.dalarm_bet_size = max(
+                CONFIG['dalarm_min_bet'],
+                self.dalarm_bet_size - CONFIG['dalarm_increment']
+            )
+            self.dalarm_total_wins += 1
         else:
-            loss = float(self.current_bet) * multiplier
-            self.bankroll = float(self.bankroll) - float(loss)
-            self.consecutive_losses = int(self.consecutive_losses) + 1
-            self.consecutive_wins = 0
-        if float(self.bankroll) > float(self.peak_bankroll):
-            self.peak_bankroll = float(self.bankroll)
-        dd = (float(self.peak_bankroll) - float(self.bankroll)) / max(float(self.peak_bankroll), 1.0)
-        self.max_drawdown = max(float(self.max_drawdown), float(dd))
-        if float(dd) >= float(CONFIG['stop_loss_pct']):
-            self.is_paused = True
-        if int(self.consecutive_wins) >= int(CONFIG['anti_martingale_after_win']):
-            self.use_paroli = True
-            self.paroli_counter = int(self.consecutive_wins)
-        else:
-            self.use_paroli = False
-        if CONFIG['use_kelly'] and self.prediction_history:
-            wr = sum(self.prediction_history) / len(self.prediction_history)
-            if wr > 0.5:
-                b = 1.9
-                kelly = (b * wr - (1 - wr)) / b
-                kelly = max(0.0, min(kelly, 0.5))
-                self.kelly_bet = float(CONFIG['base_bet']) * float(kelly) * float(CONFIG['kelly_fraction'])
-            else:
-                self.kelly_bet = float(CONFIG['base_bet'])
+            # LOSE → profit လျော့
+            self.dalarm_profit -= self.dalarm_bet_size
+            # Bet size တိုး
+            self.dalarm_bet_size += CONFIG['dalarm_increment']
+            self.dalarm_total_losses += 1
+            # Step 4 ရောက်ရင် SL mode
+            if self.dalarm_bet_size >= CONFIG['dalarm_base_bet'] + (CONFIG['dalarm_sl_step'] - 1) * CONFIG['dalarm_increment']:
+                self.is_sl_mode = True
 
-    def get_bet_size(self):
-        self._force_types()
-        if self.use_paroli:
-            return float(self.current_bet) * float(2 ** max(0, int(self.paroli_counter) - int(CONFIG['anti_martingale_after_win'])))
-        return float(self.current_bet) * float(2 ** max(0, int(self.current_step) - 1))
-
+    # ==========================================
+    # 🎯 MAIN LOGIC
+    # ==========================================
     def process_api_result(self, api_period, api_result):
         with self.lock:
             self._process_api_result_internal(api_period, api_result)
 
     def _process_api_result_internal(self, api_period, api_result):
-        self._force_types()
         self.last_api_period = str(api_period)
         try:
             api_period_int = int(api_period)
         except (ValueError, TypeError):
-            print(f"Invalid period: {api_period}", flush=True)
-            return
-        if self.is_paused:
             return
         notifications = []
 
@@ -663,34 +632,26 @@ class AdvancedAdaptiveEngine:
             is_correct = (predicted.lower() == api_result.lower())
             self.prediction_history.append(1 if is_correct else 0)
 
-            if int(self.current_step) == 1:
-                reward = 5.0 if is_correct else -5.0
-            elif is_correct:
-                reward = 4.0
-            else:
-                reward = -4.5 - (float(self.current_step) * 0.5)
+            # Q-Learning
+            reward = 5.0 if is_correct else -5.0
             self.update_q_table(self.last_state, predicted, reward)
             self.update_model_weights(api_result)
+
             if self.last_feature_vector is not None:
                 self.lr_train_X.append(self.last_feature_vector)
                 self.lr_train_y.append([FeatureEngineer.encode(api_result)])
-            self.update_bankroll(is_correct)
+
+            # 🆕 DALARM BET UPDATE
+            self.update_dalarm_bet(is_correct)
 
             if is_correct:
-                self.total_wins = int(self.total_wins) + 1
-                self.current_step = 1
-                self.current_bet = float(CONFIG['base_bet'])
-                if self.use_paroli:
-                    self.paroli_counter = int(self.paroli_counter) + 1
+                self.total_wins += 1
             else:
-                self.total_losses = int(self.total_losses) + 1
-                self.current_step = int(self.current_step) + 1
+                self.total_losses += 1
 
-            # WIN message — period ၃ လုံးပဲ ပြသ
+            # 🆕 WIN Message
             if is_correct:
-                # Period ၃ လုံးပဲ ယူ
-                short_predicted_period = str(api_period)[-3:] if len(str(api_period)) >= 3 else str(api_period)
-                notifications.append(f"🔥🔥🔥 WIN 🔥🔥🔥")
+                notifications.append("🔥🔥🔥 WIN 🔥🔥🔥")
 
             self.active_prediction = None
             self.last_state = None
@@ -705,12 +666,10 @@ class AdvancedAdaptiveEngine:
             self.last_feature_vector = FeatureEngineer.to_vector(features)
 
         # ==========================================
-        # Step 3: Next Round အတွက် Signal ပေး
+        # Step 3: Next Round အတွက် Signal
         # ==========================================
         next_period_full = str(api_period_int + 1)
         self.next_signal_period = next_period_full
-
-        # ✅ Period ကို နောက်ဆုံး ၃ လုံးပဲ ဖော်ပြ
         next_period_short = next_period_full[-3:] if len(next_period_full) >= 3 else next_period_full
 
         if len(self.window) < CONFIG['min_data_before_signal']:
@@ -729,14 +688,23 @@ class AdvancedAdaptiveEngine:
             else:
                 self.last_state = self.get_state_key()
                 self.active_prediction = prediction
-                self.total_signals = int(self.total_signals) + 1
-                notifications.append(
+                self.total_signals += 1
+
+                # 🆕 DALARM BET DISPLAY
+                bet_display = self.get_dalarm_bet_display()
+                profit_display = self.get_dalarm_profit_display()
+
+                # 🆕 BUILD MESSAGE
+                msg = (
                     f"💖Period {next_period_short}\n"
                     f"🎯 SIGNAL → {prediction.capitalize()}\n"
                     f"📊 Confidence: {confidence:.1%}\n"
-                    f"💰 Step {int(self.current_step)}x\n"
-                    f"📈 Win Rate: {self.get_rolling_accuracy():.0%}"
+                    f"💰 Step {self.dalarm_bet_size // 1000}x\n"
+                    f"📈 Win Rate: {self.get_rolling_accuracy():.0%}\n"
+                    f"{bet_display}\n"
+                    f"{profit_display}"
                 )
+                notifications.append(msg)
 
         for msg in notifications:
             self.send_telegram(msg)
@@ -764,36 +732,23 @@ def poll_telegram(agent):
                     if chat != CHAT_ID:
                         continue
                     if text == "/status":
-                        total = agent.total_wins + agent.total_losses
-                        wr = (agent.total_wins / total * 100) if total > 0 else 0
                         agent.send_telegram(
                             f"📊 STATUS\n\n"
-                            f"⚙️ {'PAUSED 🛑' if agent.is_paused else 'RUNNING 🟢'}\n"
                             f"📅 Last API: {agent.last_api_period}\n"
-                            f"🎯 Next Signal: {agent.next_signal_period}\n"
                             f"📈 Signals: {agent.total_signals}\n"
                             f"✅ Wins: {agent.total_wins} | ❌ Losses: {agent.total_losses}\n"
-                            f"🎯 Win Rate: {wr:.2f}%\n"
-                            f"💰 Step: {agent.current_step}x\n"
-                            f"💵 Bankroll: {agent.bankroll:.2f}"
+                            f"💰 Dalarm Bet: {agent.dalarm_bet_size}\n"
+                            f"⛔ SL Mode: {'YES' if agent.is_sl_mode else 'NO'}\n"
+                            f"💵 Profit: {agent.dalarm_profit:+.0f}"
                         )
-                    elif text == "/pause":
-                        with agent.lock:
-                            agent.is_paused = True
-                        agent.send_telegram("🛑 Paused")
-                    elif text == "/resume":
-                        with agent.lock:
-                            agent.is_paused = False
-                        agent.send_telegram("🟢 Resumed")
                     elif text == "/reset":
                         with agent.lock:
-                            agent.bankroll = 1000.0
-                            agent.current_step = 1
-                            agent.current_bet = CONFIG['base_bet']
-                            agent.total_profit = 0.0
-                            agent.peak_bankroll = 1000.0
-                            agent.max_drawdown = 0.0
-                            agent.is_paused = False
+                            agent.dalarm_bet_size = CONFIG['dalarm_base_bet']
+                            agent.dalarm_profit = 0.0
+                            agent.is_sl_mode = False
+                            agent.dalarm_total_bets = 0
+                            agent.dalarm_total_wins = 0
+                            agent.dalarm_total_losses = 0
                         agent.send_telegram("🔄 Reset")
         except Exception as e:
             print(f"TG Poll Error: {e}", flush=True)
@@ -801,12 +756,12 @@ def poll_telegram(agent):
 
 
 def run_bot():
-    print("🤖 Bot Started (No Pause + Short Period)", flush=True)
+    print("🤖 Bot Started (Dalarm Bet Style)", flush=True)
     agent = AdvancedAdaptiveEngine()
     threading.Thread(target=poll_telegram, args=(agent,), daemon=True).start()
     last_processed_period = None
     url = CONFIG['api_url']
-    auth = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOiIxNzg3OTgxNTA5IiwibmJmIjoiMTc4Nzk4MTUwOSIsImV4cCI6IjE3ODc5ODMzMDkiLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL2V4cGlyYXRpb24iOiI4LzI5LzIwMjYgMTI6MzE2NDkgUE0iLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL3JvbGUiOiJBY2Nlc3NfVG9rZW4iLCJVc2VySWQiOiIxMDEyMjEzIiwiVXNlck5hbWUiOiI5NTk3NDA5MzkzNzAiLCJVc2VyUGhvdG8iOiI5IiwiTmlja05hbWUiOiJUaGV0R3lpIiwiQW1vdW50IjoiODcuMzAiLCJJbnRlZ3JhbCI6IjAiLCJMb2dpbk1hcmsiOiJINSIsImxvZ2luVGltZSI6IjgvMjkvMjAyNiAxMjowMTo0OSBQTSIsImxvZ2luSVBBZGRyZXNzIjoiNDUuNDEuMTA0LjI0MCIsImRiTnVtYmVyIjoiMCIsIklzdmFsaWRhdG9yIjoiMCIsIktleUNvZGUiOiIzMjMzMiIsImRva2VuVHlwZSI6IjJBY2Nlc3NfVG9rZW4iLCJob25lVHlpZSI6IjAiLCJVc2VyVHlpZSI6IjAiLCJVc2VyTmFtZ2UiOiIuIiwiaXNzIjoiand0SXNzdWVyIiwiYXVkIjoibG90dGVyeVRpY2tldCJ9.ZL0Y9gexUTCsKwWeZhCLAAw8AABEYJt0GnIzIviMG4g"
+    auth = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOiIxNzg3OTgxNTA5IiwibmJmIjoiMTc4Nzk4MTUwOSIsImV4cCI6IjE3ODc5ODMzMDkiLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL2V4cGlyYXRpb24iOiI4LzI5LzIwMjYgMTI6MzE2NDkgUE0iLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL3JvbGUiOiJBY2Nlc3NfVG9rZW4iLCJVc2VySWQiOiIxMDEyMjEzIiwiVXNlck5hbWUiOiI5NTk3NDA5MzkzNzAiLCJVc2VyUGhvdG8iOiI5IiwiTmlja05hbWUiOiJUaGV0R3lpIiwiQW1vdW50IjoiODcuMzAiLCJJbnRlZ3JhbCI6IjAiLCJMb2dpbk1hcmsiOiJINSIsImxvZ2luVGltZSI6IjgvMjkvMjAyNiAxMjowMTo0OSBQTSIsImxvZ2luSVBBZGRyZXNzIjoiNDUuNDEuMTA0LjI0MCIsImRiTnVtYmVyIjoiMCIsIklzdmFsaWRhdG9yIjoiMCIsIktleUNvZGUiOiIzMjMzMiIsImRva2VuVHlwZSI6IjJBY2Nlc3NfVG9rZW4iLCJob25lVHlpZSI6IjAiLCJVc2VyVHlwZSI6IjAiLCJVc2VyTmFtZ2UiOiIuIiwiaXNzIjoiand0SXNzdWVyIiwiYXVkIjoibG90dGVyeVRpY2tldCJ9.ZL0Y9gexUTCsKwWeZhCLAAw8AABEYJt0GnIzIviMG4g"
     headers = {
         "accept": "application/json, text/plain, */*",
         "authorization": f"Bearer {auth}",
@@ -818,17 +773,13 @@ def run_bot():
     while True:
         try:
             payload = {
-                "pageSize": 10,
-                "pageNo": 1,
-                "typeId": 30,
-                "language": 7,
+                "pageSize": 10, "pageNo": 1, "typeId": 30, "language": 7,
                 "random": "036263f367384d418be07465793c8da8",
                 "signature": "55F4FD150F15F090B943374F3C9BE78B",
                 "timestamp": int(time.time())
             }
             res = requests.post(url, headers=headers, json=payload, timeout=5)
             if res.status_code != 200:
-                print(f"API Error: {res.status_code}", flush=True)
                 time.sleep(2)
                 continue
             data = res.json()
