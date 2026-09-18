@@ -18,6 +18,9 @@ CHAT_ID = "-1004402480797"
 SUPABASE_URL = "https://msgzacekhrvlqkqgjvly.supabase.co"
 SUPABASE_KEY = "sb_publishable_bVJj1lqSAsIQ1kQ8Ae2vAQ_o3yCjDeA"
 
+# ==========================================
+# 🧠 CONFIGURATION
+# ==========================================
 CONFIG = {
     "q_lr": 0.45,
     "q_discount": 0.95,
@@ -30,7 +33,7 @@ CONFIG = {
     "take_profit_pct": 0.50,
     "use_kelly": True,
     "kelly_fraction": 0.25,
-    "rolling_accuracy_window": 20,
+    "rolling_accuracy_window": 50,
     "anti_martingale_after_win": 3,
     "window_size": 60,
     "short_ma_period": 10,
@@ -44,7 +47,6 @@ CONFIG = {
     "min_data_before_signal": 15,
     "min_agreement": 4,
     "adaptive_weight_alpha": 0.2,
-    "min_rolling_accuracy": 0.45,
 }
 
 app = Flask(__name__)
@@ -395,27 +397,18 @@ class AdvancedAdaptiveEngine:
         return arr[-1]
 
     def streak_predict(self, lst):
-        """✅ FIXED: Encode strings to 0/1 before numeric operations."""
         arr = list(lst)
         if len(arr) < 5:
             return "Big"
-
-        # ✅ Encode strings to numbers
         encoded = [FeatureEngineer.encode(r) for r in arr]
-
-        # Streak count (using encoded)
         streak_count = 1
         for i in range(len(encoded) - 2, -1, -1):
             if encoded[i] == encoded[-1]:
                 streak_count += 1
             else:
                 break
-
-        # ✅ Momentum using encoded (numbers)
         mom3 = sum(encoded[-3:]) / 3.0
         mom5 = sum(encoded[-5:]) / 5.0
-
-        # Prediction (return original string)
         if streak_count >= 4:
             return "Small" if arr[-1] == "Big" else "Big"
         elif streak_count >= 3 and abs(mom3 - mom5) > 0.4:
@@ -601,10 +594,8 @@ class AdvancedAdaptiveEngine:
         return sum(self.prediction_history) / len(self.prediction_history)
 
     def should_trade(self):
-        if len(self.prediction_history) < 10:
-            return True
-        rolling_acc = self.get_rolling_accuracy()
-        return rolling_acc >= CONFIG['min_rolling_accuracy']
+        """Signal bot — always trade. No pause."""
+        return True
 
     def update_bankroll(self, won):
         self._force_types()
@@ -663,10 +654,15 @@ class AdvancedAdaptiveEngine:
         if self.is_paused:
             return
         notifications = []
+
+        # ==========================================
+        # Step 1: Previous Prediction ကို စစ်
+        # ==========================================
         if self.active_prediction is not None and self.last_state is not None:
             predicted = self.active_prediction
             is_correct = (predicted.lower() == api_result.lower())
             self.prediction_history.append(1 if is_correct else 0)
+
             if int(self.current_step) == 1:
                 reward = 5.0 if is_correct else -5.0
             elif is_correct:
@@ -679,6 +675,7 @@ class AdvancedAdaptiveEngine:
                 self.lr_train_X.append(self.last_feature_vector)
                 self.lr_train_y.append([FeatureEngineer.encode(api_result)])
             self.update_bankroll(is_correct)
+
             if is_correct:
                 self.total_wins = int(self.total_wins) + 1
                 self.current_step = 1
@@ -688,32 +685,44 @@ class AdvancedAdaptiveEngine:
             else:
                 self.total_losses = int(self.total_losses) + 1
                 self.current_step = int(self.current_step) + 1
+
+            # WIN message — period ၃ လုံးပဲ ပြသ
             if is_correct:
-                notifications.append("🔥🔥🔥 WIN 🔥🔥🔥")
+                # Period ၃ လုံးပဲ ယူ
+                short_predicted_period = str(api_period)[-3:] if len(str(api_period)) >= 3 else str(api_period)
+                notifications.append(f"🔥🔥🔥 WIN 🔥🔥🔥")
+
             self.active_prediction = None
             self.last_state = None
             self.update_epsilon()
+
+        # ==========================================
+        # Step 2: Window ထဲ api_result ထည့်
+        # ==========================================
         self.window.append(api_result)
         if len(self.window) > 0:
             features, _ = FeatureEngineer.extract(list(self.window))
             self.last_feature_vector = FeatureEngineer.to_vector(features)
-        next_period = str(api_period_int + 1)
-        self.next_signal_period = next_period
+
+        # ==========================================
+        # Step 3: Next Round အတွက် Signal ပေး
+        # ==========================================
+        next_period_full = str(api_period_int + 1)
+        self.next_signal_period = next_period_full
+
+        # ✅ Period ကို နောက်ဆုံး ၃ လုံးပဲ ဖော်ပြ
+        next_period_short = next_period_full[-3:] if len(next_period_full) >= 3 else next_period_full
+
         if len(self.window) < CONFIG['min_data_before_signal']:
             notifications.append(
-                f"💖Period {next_period}\n"
+                f"💖Period {next_period_short}\n"
                 f"⏳ Collecting... {len(self.window)}/{CONFIG['min_data_before_signal']}"
-            )
-        elif not self.should_trade():
-            notifications.append(
-                f"💖Period {next_period}\n"
-                f"⏸️ Paused (Acc: {self.get_rolling_accuracy():.0%})"
             )
         else:
             prediction, regime, confidence = self.get_consensus(list(self.window))
             if confidence < CONFIG['min_confidence_for_trade']:
                 notifications.append(
-                    f"💖Period {next_period}\n"
+                    f"💖Period {next_period_short}\n"
                     f"⏭️ SKIP (Conf: {confidence:.1%})"
                 )
                 self.active_prediction = None
@@ -722,12 +731,13 @@ class AdvancedAdaptiveEngine:
                 self.active_prediction = prediction
                 self.total_signals = int(self.total_signals) + 1
                 notifications.append(
-                    f"💖Period {next_period}\n"
+                    f"💖Period {next_period_short}\n"
                     f"🎯 SIGNAL → {prediction.capitalize()}\n"
                     f"📊 Confidence: {confidence:.1%}\n"
                     f"💰 Step {int(self.current_step)}x\n"
                     f"📈 Win Rate: {self.get_rolling_accuracy():.0%}"
                 )
+
         for msg in notifications:
             self.send_telegram(msg)
 
@@ -791,7 +801,7 @@ def poll_telegram(agent):
 
 
 def run_bot():
-    print("🤖 Bot Started (streak_predict FIXED)", flush=True)
+    print("🤖 Bot Started (No Pause + Short Period)", flush=True)
     agent = AdvancedAdaptiveEngine()
     threading.Thread(target=poll_telegram, args=(agent,), daemon=True).start()
     last_processed_period = None
