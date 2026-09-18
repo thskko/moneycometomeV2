@@ -52,11 +52,10 @@ CONFIG = {
     # 🆕 DALARM BET STYLE
     # ==========================================
     "dalarm_base_bet": 1000,       # Start bet
-    "dalarm_increment": 1000,      # LOSE → +1000, WIN → -1000
+    "dalarm_increment": 1000,      # +1000 / -1000
     "dalarm_min_bet": 1000,        # Minimum
-    "dalarm_sl_step": 4,           # Step 4+ → SL mode (bet မပို့)
-    "dalarm_sl_reset_step": 1,     # Step 1 ရောက်ရင် resume
-    "dalarm_payout": 0.9,          # Win payout = 0.9x (1.9x total)
+    "dalarm_sl_step": 4,           # Step 4+ → SL mode
+    "dalarm_payout": 0.9,          # Win payout (1.9x total)
     "dalarm_currency": "🇲🇲",
 }
 
@@ -80,8 +79,8 @@ def home():
     <p><b>Last API Period:</b> {global_agent.last_api_period}</p>
     <p><b>Total Signals:</b> {global_agent.total_signals}</p>
     <p><b>Win Rate:</b> {wr:.2f}%</p>
-    <p><b>Current Step:</b> Step {global_agent.current_step}</p>
-    <p><b>Current Bet Size:</b> {global_agent.dalarm_bet_size}</p>
+    <p><b>Dalarm Step:</b> Step {global_agent.dalarm_step}</p>
+    <p><b>Dalarm Bet Size:</b> {global_agent.dalarm_bet_size}</p>
     <p><b>SL Mode:</b> {'YES ⛔' if global_agent.is_sl_mode else 'NO ✅'}</p>
     <p><b>Dalarm Profit:</b> {global_agent.dalarm_profit:+.0f}</p>
     """
@@ -243,8 +242,6 @@ class AdvancedAdaptiveEngine:
         self.total_signals = 0
         self.total_wins = 0
         self.total_losses = 0
-        self.consecutive_wins = 0
-        self.consecutive_losses = 0
         self.prediction_history = deque(maxlen=CONFIG['rolling_accuracy_window'])
         self.q_lr = CONFIG['q_lr']
         self.q_discount = CONFIG['q_discount']
@@ -265,19 +262,20 @@ class AdvancedAdaptiveEngine:
             for k in self.model_weights
         }
         self.regime = "unknown"
+        self.is_paused = False
 
         # ==========================================
-        # 🆕 DALARM BET STYLE — STATE
+        # 🆕 DALARM BET STYLE — STATE (FIXED)
         # ==========================================
-        self.dalarm_bet_size = CONFIG['dalarm_base_bet']  # Current bet size
+        self.dalarm_bet_size = CONFIG['dalarm_base_bet']  # Current bet
+        self.dalarm_step = 1                              # ← SEPARATE STEP TRACK
         self.dalarm_profit = 0.0                          # Total profit
-        self.is_sl_mode = False                           # SL mode flag
-        self.dalarm_total_bets = 0                        # Total bets placed
-        self.dalarm_total_wins = 0                        # Total wins
-        self.dalarm_total_losses = 0                      # Total losses
+        self.is_sl_mode = False                           # SL mode
+        self.dalarm_total_wins = 0
+        self.dalarm_total_losses = 0
 
     def get_current_multiplier(self):
-        return 1
+        return self.dalarm_step
 
     # ==========================================
     # 🆕 TELEGRAM with RETRY
@@ -545,12 +543,7 @@ class AdvancedAdaptiveEngine:
         self.last_confidence = confidence
         is_choppy, flip = self.check_volatility(window_list)
         note = f" | {regime.capitalize()}"
-        if self.last_signal_direction_check(predicted):
-            pass
         return predicted, f"🎯 Big={scores['Big']:.1f}/Small={scores['Small']:.1f} | {agreement_count}/9 | {regime}{note}", confidence
-
-    def last_signal_direction_check(self, predicted):
-        return False
 
     def get_rolling_accuracy(self):
         if not self.prediction_history:
@@ -558,7 +551,7 @@ class AdvancedAdaptiveEngine:
         return sum(self.prediction_history) / len(self.prediction_history)
 
     # ==========================================
-    # 🆕 DALARM BET STYLE — CORE LOGIC
+    # 🆕 DALARM BET STYLE — FIXED CORE LOGIC
     # ==========================================
     def get_dalarm_bet_display(self):
         """Return bet display string (empty if SL mode)."""
@@ -574,39 +567,43 @@ class AdvancedAdaptiveEngine:
             return f"💰 Profit: {self.dalarm_profit:.0f}"
 
     def update_dalarm_bet(self, won):
-        """Update dalarm bet size and profit."""
+        """
+        Update dalarm bet size and step.
+        
+        Rules:
+        - WIN → Step 1, Bet -1000
+        - LOSE → Step +1, Bet +1000
+        - Step 4+ → SL mode
+        - SL WIN → Step 1, resume
+        """
         if self.is_sl_mode:
             # SL mode — bet မလောင်း
-            # WIN ဖြစ်ရင် step 1 ပြန်
             if won:
+                # SL WIN → Step 1, resume
                 self.is_sl_mode = False
-                # Step 1 ရောက်ပြီ — လက်ရှိ bet size ကို ထားရှိ
-                # ဒါပေမယ့် WIN ဖြစ်တဲ့အတွက် 1000 လျော့
-                self.dalarm_bet_size = max(
-                    CONFIG['dalarm_min_bet'],
-                    self.dalarm_bet_size - CONFIG['dalarm_increment']
-                )
+                self.dalarm_step = 1
+                # Bet size ကို လက်ရှိအတိုင်း ထား (SL မတိုင်ခင်)
             return
-        
+
         # Normal betting
         if won:
-            # WIN → profit တိုး
+            # WIN → Step 1, Bet -1000
             profit = self.dalarm_bet_size * CONFIG['dalarm_payout']
             self.dalarm_profit += profit
-            # Bet size လျော့
+            self.dalarm_step = 1  # ← FIXED: Step 1
             self.dalarm_bet_size = max(
                 CONFIG['dalarm_min_bet'],
                 self.dalarm_bet_size - CONFIG['dalarm_increment']
             )
             self.dalarm_total_wins += 1
         else:
-            # LOSE → profit လျော့
+            # LOSE → Step +1, Bet +1000
             self.dalarm_profit -= self.dalarm_bet_size
-            # Bet size တိုး
+            self.dalarm_step += 1  # ← FIXED: Step +1
             self.dalarm_bet_size += CONFIG['dalarm_increment']
             self.dalarm_total_losses += 1
-            # Step 4 ရောက်ရင် SL mode
-            if self.dalarm_bet_size >= CONFIG['dalarm_base_bet'] + (CONFIG['dalarm_sl_step'] - 1) * CONFIG['dalarm_increment']:
+            # Step 4+ → SL mode
+            if self.dalarm_step >= CONFIG['dalarm_sl_step']:
                 self.is_sl_mode = True
 
     # ==========================================
@@ -624,15 +621,12 @@ class AdvancedAdaptiveEngine:
             return
         notifications = []
 
-        # ==========================================
         # Step 1: Previous Prediction ကို စစ်
-        # ==========================================
         if self.active_prediction is not None and self.last_state is not None:
             predicted = self.active_prediction
             is_correct = (predicted.lower() == api_result.lower())
             self.prediction_history.append(1 if is_correct else 0)
 
-            # Q-Learning
             reward = 5.0 if is_correct else -5.0
             self.update_q_table(self.last_state, predicted, reward)
             self.update_model_weights(api_result)
@@ -649,7 +643,6 @@ class AdvancedAdaptiveEngine:
             else:
                 self.total_losses += 1
 
-            # 🆕 WIN Message
             if is_correct:
                 notifications.append("🔥🔥🔥 WIN 🔥🔥🔥")
 
@@ -657,17 +650,13 @@ class AdvancedAdaptiveEngine:
             self.last_state = None
             self.update_epsilon()
 
-        # ==========================================
         # Step 2: Window ထဲ api_result ထည့်
-        # ==========================================
         self.window.append(api_result)
         if len(self.window) > 0:
             features, _ = FeatureEngineer.extract(list(self.window))
             self.last_feature_vector = FeatureEngineer.to_vector(features)
 
-        # ==========================================
         # Step 3: Next Round အတွက် Signal
-        # ==========================================
         next_period_full = str(api_period_int + 1)
         self.next_signal_period = next_period_full
         next_period_short = next_period_full[-3:] if len(next_period_full) >= 3 else next_period_full
@@ -690,21 +679,19 @@ class AdvancedAdaptiveEngine:
                 self.active_prediction = prediction
                 self.total_signals += 1
 
-                # 🆕 DALARM BET DISPLAY
+                # 🆕 DALARM BET + PROFIT
                 bet_display = self.get_dalarm_bet_display()
                 profit_display = self.get_dalarm_profit_display()
 
-                # 🆕 BUILD MESSAGE
-                msg = (
+                notifications.append(
                     f"💖Period {next_period_short}\n"
                     f"🎯 SIGNAL → {prediction.capitalize()}\n"
                     f"📊 Confidence: {confidence:.1%}\n"
-                    f"💰 Step {self.dalarm_bet_size // 1000}x\n"
+                    f"💰 Step {self.dalarm_step}x\n"     # ← FIXED: use dalarm_step
                     f"📈 Win Rate: {self.get_rolling_accuracy():.0%}\n"
                     f"{bet_display}\n"
                     f"{profit_display}"
                 )
-                notifications.append(msg)
 
         for msg in notifications:
             self.send_telegram(msg)
@@ -737,6 +724,7 @@ def poll_telegram(agent):
                             f"📅 Last API: {agent.last_api_period}\n"
                             f"📈 Signals: {agent.total_signals}\n"
                             f"✅ Wins: {agent.total_wins} | ❌ Losses: {agent.total_losses}\n"
+                            f"💰 Dalarm Step: {agent.dalarm_step}x\n"
                             f"💰 Dalarm Bet: {agent.dalarm_bet_size}\n"
                             f"⛔ SL Mode: {'YES' if agent.is_sl_mode else 'NO'}\n"
                             f"💵 Profit: {agent.dalarm_profit:+.0f}"
@@ -744,9 +732,9 @@ def poll_telegram(agent):
                     elif text == "/reset":
                         with agent.lock:
                             agent.dalarm_bet_size = CONFIG['dalarm_base_bet']
+                            agent.dalarm_step = 1
                             agent.dalarm_profit = 0.0
                             agent.is_sl_mode = False
-                            agent.dalarm_total_bets = 0
                             agent.dalarm_total_wins = 0
                             agent.dalarm_total_losses = 0
                         agent.send_telegram("🔄 Reset")
@@ -756,7 +744,7 @@ def poll_telegram(agent):
 
 
 def run_bot():
-    print("🤖 Bot Started (Dalarm Bet Style)", flush=True)
+    print("🤖 Bot Started (Dalarm Bet Style - FIXED)", flush=True)
     agent = AdvancedAdaptiveEngine()
     threading.Thread(target=poll_telegram, args=(agent,), daemon=True).start()
     last_processed_period = None
