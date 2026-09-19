@@ -1,11 +1,13 @@
 """
-🚀 V15.5 — Final Level Logic
+🚀 V15.6 — Level 1-30+ State Machine
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Rules:
-  1. Skip ပွဲ (Bot Step 3x+) → လုံးဝ မပါ
-  2. Bet ထိုးတဲ့ Win 2 ကြိမ်ဆက် → Level 1 Reset 🎉
-  3. Bet1 + Bet2 နှစ်ခုလုံး Lose → Level +1 ⬅️
-  4. Lose တစ်ခုခု → Win Streak = 0
+  1. Level N: WAITING_BET1 / WAITING_BET2
+  2. Bet1 Lose → Level N+1 (WAITING_BET1)
+  3. Bet1 Win → Level N (WAITING_BET2)
+  4. Bet2 Lose → Level N+1 (WAITING_BET1)
+  5. Bet2 Win → Level 1 Reset 🎉
+  6. Bot Step → Signal ထုတ်ဖို့ပဲ (Bet Style မထိ)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
@@ -23,7 +25,7 @@ from flask import Flask
 # ==========================================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8913070806:AAF3rP0zKJtofE-5KVesqcdoHzn7Go0avho")
 CHAT_ID = os.environ.get("CHAT_ID", "-1004402480797")
-LOTTERY_AUTH = os.environ.get("LOTTERY_AUTH", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOiIxNzg3OTgxNTA5IiwibmJmIjoiMTc4Nzk4MTUwOSIsImV4cCI6IjE3ODc5ODMzMDkiLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL2V4cGlyYXRpb24iOiI4LzI5LzIwMjYgMTI6MzE2NDkgUE0iLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL3JvbGUiOiJBY2Nlc3NfVG9rZW4iLCJVc2VySWQiOiIxMDEyMjEzIiwiVXNlck5hbWUiOiI5NTk3NDA5MzkzNzAiLCJVc2VyUGhvdG8iOiI5IiwiTmlja05hbWUiOiJUaGVrR3lpIiwiQW1vdW50IjoiODcuMzAiLCJJbnRlZ3JhbCI6IjAiLCJMb2dpbk1hcmsiOiJINSIsImxvZ2luVGltZSI6IjcvMjkvMjAyNiAxMjowMTo0OSBQTSIsImxvZ2luSVBBZGRyZXNzIjoiNDUuNDEuMTA0LjI0MCIsImRiTnVtYmVyIjoiMCIsIklzdmFsaWRhdG9yIjoiMCIsIktleUNvZGUiOiIzMjMzMiIsImRva2VuVHlwZSI6IjJBY2Nlc3NfVG9rZW4iLCJob25lVHlwZSI6IjAiLCJVc2VyVHlwZSI6IjAiLCJVc2VyTmFtZ2UiOiIuIiwiaXNzIjoiand0SXNzdWVyIiwiYXVkIjoibG90dGVyeVRpY2tldCJ9.ZL0Y9gexUTCsKwWeZhCLAAw8AABEYJt0GnIzIviMG4g")
+LOTTERY_AUTH = os.environ.get("LOTTERY_AUTH", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOiIxNzg3OTgxNTA5IiwibmJmIjoiMTc4Nzk4MTUwOSIsImV4cCI6IjE3ODc5ODMzMDkiLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL2V4cGlyYXRpb24iOiI4LzI5LzIwMjYgMTI6MzE2NDkgUE0iLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL3JvbGUiOiJBY2Nlc3NfVG9rZW4iLCJVc2VySWQiOiIxMDEyMjEzIiwiVXNlck5hbWUiOiI5NTk3NDA5MzkzNzAiLCJVc2VyUGhvdG8iOiI5IiwiTmlja05hbWUiOiJUaGV0R3lpIiwiQW1vdW50IjoiODcuMzAiLCJJbnRlZ3JhbCI6IjAiLCJsb2dpbk1hcmsiOiJINSIsImxvZ2luVGltZSI6IjgvMjkvMjAyNiAxMjowMTo0OSBQTSIsImxvZ2luSVBBZGRyZXNzIjoiNDUuNDEuMTA0LjI0MCIsImRiTnVtYmVyIjoiMCIsIklzdmFsaWRhdG9yIjoiMCIsIktleUNvZGUiOiIzMjMzMiIsImRva2VuVHlwZSI6IjJBY2Nlc3NfVG9rZW4iLCJob25lVHlpZSI6IjAiLCJVc2VyVHlwZSI6IjAiLCJVc2VyTmFtZ2UiOiIuIiwiaXNzIjoiand0SXNzdWVyIiwiYXVkIjoibG90dGVyeVRpY2tldCJ9.ZL0Y9gexUTCsKwWeZhCLAAw8AABEYJt0GnIzIviMG4g")
 
 COLOUR_MAP = {
     0: "Violet+Red", 1: "Green", 2: "Red", 3: "Green", 4: "Red",
@@ -55,7 +57,7 @@ CONFIG = {
 }
 
 # ==========================================
-# 📊 LEVEL TABLE
+# 📊 LEVEL TABLE (1-30) + Fibonacci 31+
 # ==========================================
 LEVEL_TABLE = {
     1:  {"bet1": 1000,    "bet2": 2000},
@@ -271,7 +273,7 @@ class LogisticRegression:
 
 
 # ==========================================
-# 🎯 V15.5 ENGINE
+# 🎯 V15.6 ENGINE — State Machine
 # ==========================================
 class V15Engine:
     def __init__(self):
@@ -284,18 +286,15 @@ class V15Engine:
         self.active_prediction = None
         self.last_state = None
         self.last_digit = None
-        self.last_bot_step = None   # ဘယ် step မှာ ထိုးခဲ့လဲ track
+        self.last_bot_step = None
         
         # Signal Bot Step
         self.bot_step = 1
         
-        # 🆕 Level System
+        # 🆕 Level State Machine
         self.level = 1
-        self.win_streak = 0         # Bet ထိုးတဲ့ Win Streak
-        self.bet1_lose = False      # Bet1 Lose track
-        self.bet2_lose = False      # Bet2 Lose track
+        self.level_state = "WAITING_BET1"  # WAITING_BET1 or WAITING_BET2
         self.current_bet = 0
-        self.state = 'betting'
         
         # Stats
         self.total_signals = 0
@@ -309,7 +308,6 @@ class V15Engine:
         self.max_profit_seen = 0.0
         self.cycles_completed = 0
         self.max_level_reached = 1
-        self.rounds_in_wait = 0
         self.profit_resets = 0
         
         # Model accuracy
@@ -366,84 +364,58 @@ class V15Engine:
             self.max_profit_seen = self.current_profit
 
     # ==========================================
-    # 💰 LEVEL SYSTEM
+    # 💰 LEVEL STATE MACHINE
     # ==========================================
-    def get_level_info(self):
-        return get_level_bet(self.level)
-    
-    def get_current_level_bet(self):
-        info = self.get_level_info()
-        return info["bet1"], info["bet2"]
+    def get_current_bet(self):
+        """လက်ရှိ Level State အရ Bet ယူ"""
+        info = get_level_bet(self.level)
+        if self.level_state == "WAITING_BET1":
+            return info["bet1"], "BET1"
+        else:
+            return info["bet2"], "BET2"
+
+    def on_result(self, won):
+        """
+        Result ရရင် Level State Update
+        Returns: (action, old_level, old_state)
+        """
+        old_level = self.level
+        old_state = self.level_state
+        
+        if self.level_state == "WAITING_BET1":
+            if won:
+                # ✅ Bet1 Win → Bet2 စောင့်
+                self.level_state = "WAITING_BET2"
+                return "BET1_WIN", old_level, old_state
+            else:
+                # ❌ Bet1 Lose → Level +1
+                self.level += 1
+                self.level_state = "WAITING_BET1"
+                if self.level > self.max_level_reached:
+                    self.max_level_reached = self.level
+                return "BET1_LOSE", old_level, old_state
+        
+        else:  # WAITING_BET2
+            if won:
+                # 🎉 Bet2 Win → Level 1 Reset
+                self.level = 1
+                self.level_state = "WAITING_BET1"
+                self.cycles_completed += 1
+                return "RESET", old_level, old_state
+            else:
+                # ❌ Bet2 Lose → Level +1
+                self.level += 1
+                self.level_state = "WAITING_BET1"
+                if self.level > self.max_level_reached:
+                    self.max_level_reached = self.level
+                return "BET2_LOSE", old_level, old_state
 
     def update_bot_step(self, bot_won):
+        """Signal Bot Step: Win → 1x Reset, Lose → +1"""
         if bot_won:
             self.bot_step = 1
         else:
             self.bot_step += 1
-
-    # ==========================================
-    # 🎯 V15.5 LEVEL LOGIC (Skip မပါ)
-    # ==========================================
-    def process_level_logic(self, bot_won, bot_step):
-        """
-        bot_step: 1 = Bet1, 2 = Bet2, 3+ = Skip
-        Returns: (action, old_level)
-        """
-        # ⏭️ Skip → ဘာမှ မထိ ✅
-        if bot_step >= 3:
-            return "SKIP", self.level
-        
-        old_level = self.level
-        
-        if bot_won:
-            # ✅ Bet Win → Win Streak +1
-            self.win_streak += 1
-            
-            # Bet1/Bet2 Lose flag reset (Win ဖြစ်လို့)
-            if bot_step == 1:
-                self.bet1_lose = False
-            elif bot_step == 2:
-                self.bet2_lose = False
-            
-            # 🎉 Win Streak = 2 → Level 1 Reset
-            if self.win_streak >= 2:
-                self.level = 1
-                self.win_streak = 0
-                self.bet1_lose = False
-                self.bet2_lose = False
-                self.cycles_completed += 1
-                return "RESET", old_level
-            else:
-                return "WIN", old_level
-        
-        else:
-            # ❌ Bet Lose → Win Streak = 0
-            self.win_streak = 0
-            
-            if bot_step == 1:
-                # Bet1 Lose
-                self.bet1_lose = True
-                return "BET1_LOSE", old_level
-            
-            elif bot_step == 2:
-                # Bet2 Lose
-                self.bet2_lose = True
-                
-                # 🎯 Bet1 + Bet2 နှစ်ခုလုံး Lose → Level +1
-                if self.bet1_lose and self.bet2_lose:
-                    self.level += 1
-                    if self.level > self.max_level_reached:
-                        self.max_level_reached = self.level
-                    self.bet1_lose = False
-                    self.bet2_lose = False
-                    return "LEVEL_UP", old_level
-                else:
-                    # Bet1 Win ဖြစ်ခဲ့ → Level ဆက်
-                    self.bet1_lose = False
-                    self.bet2_lose = False
-                    return "BET2_LOSE", old_level
-        
-        return "CONTINUE", old_level
 
     # ==========================================
     # 💰 PROFIT RESET
@@ -470,10 +442,8 @@ class V15Engine:
             self.max_loss_amount = 0.0
             self.max_profit_seen = 0.0
             self.level = 1
+            self.level_state = "WAITING_BET1"
             self.bot_step = 1
-            self.win_streak = 0
-            self.bet1_lose = False
-            self.bet2_lose = False
             self.max_level_reached = 1
             self.cycles_completed = 0
             self.profit_resets += 1
@@ -507,7 +477,7 @@ class V15Engine:
         self.epsilon = max(CONFIG['q_min_epsilon'], self.epsilon * CONFIG['q_epsilon_decay'])
 
     # ==========================================
-    # 13 MODELS
+    # 13 MODELS (Same as V15.5)
     # ==========================================
     def markov_order2(self, encoded):
         if len(encoded) < 10: return None, 0
@@ -821,7 +791,7 @@ class V15Engine:
             self.digit_history.append(digit)
 
         # ==========================================
-        # Verify previous prediction
+        # Verify Previous Prediction
         # ==========================================
         if self.active_prediction is not None and self.last_state is not None:
             bot_won = (self.active_prediction == api_result)
@@ -840,41 +810,33 @@ class V15Engine:
             if bot_won: self.total_wins += 1
             else: self.total_losses += 1
 
-            # 🎯 Bet amount ကို သိ (bet ထိုးခဲ့လား?)
-            bet_step = self.last_bot_step
-            was_bet = (bet_step == 1 or bet_step == 2)
-            
-            if was_bet:
-                bet1, bet2 = self.get_current_level_bet()
-                bet_amount = bet1 if bet_step == 1 else bet2
-                
-                # Profit/Loss tracking
-                if bot_won:
-                    profit_amount = bet_amount * CONFIG['payout_rate']
-                    self.total_profit += profit_amount
-                    self.current_profit += profit_amount
-                else:
-                    self.total_loss_amount += bet_amount
-                    self.current_profit -= bet_amount
-                
-                self.update_max_tracking()
-            
             # ==========================================
-            # 🎯 V15.5 LEVEL LOGIC
+            # 🎯 LEVEL STATE MACHINE
             # ==========================================
-            action, old_level = self.process_level_logic(bot_won, bet_step)
+            # လက်ရှိ bet ကို ယူ
+            bet_amount, bet_type = self.get_current_bet()
             
-            # ✅ WIN MESSAGE (Only)
-            if bot_won and was_bet:
-                bet1, bet2 = self.get_current_level_bet()
-                bet_amount = bet1 if bet_step == 1 else bet2
+            # Profit/Loss tracking
+            if bot_won:
                 profit_amount = bet_amount * CONFIG['payout_rate']
-                
+                self.total_profit += profit_amount
+                self.current_profit += profit_amount
+            else:
+                self.total_loss_amount += bet_amount
+                self.current_profit -= bet_amount
+            
+            self.update_max_tracking()
+            
+            # Level State Update
+            action, old_level, old_state = self.on_result(bot_won)
+            
+            # ✅ WIN MESSAGE
+            if bot_won:
                 if action == "RESET":
                     notifications.append(
                         f"🔥 <b>WIN ✅</b> (+{profit_amount:,.0f})\n"
-                        f"🎉 <b>2-WIN STREAK!</b>\n"
-                        f"🔄 <b>Level {old_level} → Level 1 RESET</b>\n"
+                        f"🎉 <b>BET2 WIN → Level 1 RESET</b>\n"
+                        f"🔄 Level {old_level} → Level 1\n"
                         f"\n"
                         f"━━━━━━━━━━━━━━━━━\n"
                         f"🏆 Max Level: {self.max_level_reached}\n"
@@ -885,7 +847,8 @@ class V15Engine:
                 else:
                     notifications.append(
                         f"🔥 <b>WIN ✅</b> (+{profit_amount:,.0f})\n"
-                        f"🎯 Win Streak: {self.win_streak}/2\n"
+                        f"🎯 Bet1 Win → Bet2 စောင့်\n"
+                        f"🎮 Level: {self.level} | State: BET2\n"
                         f"\n"
                         f"━━━━━━━━━━━━━━━━━\n"
                         f"🏆 Max Level: {self.max_level_reached}\n"
@@ -895,11 +858,11 @@ class V15Engine:
                     )
             
             # Level Up message
-            if action == "LEVEL_UP" and was_bet:
+            if action in ("BET1_LOSE", "BET2_LOSE"):
                 notifications.append(
-                    f"📈 <b>LEVEL UP!</b>\n"
+                    f"📈 <b>LEVEL UP</b>\n"
                     f"🔄 Level {old_level} → Level {self.level}\n"
-                    f"💰 Next Bet1: {self.get_current_level_bet()[0]:,}"
+                    f"💰 Next Bet1: {get_level_bet(self.level)['bet1']:,}"
                 )
 
             # Update Bot Step
@@ -909,7 +872,7 @@ class V15Engine:
             self.last_state = None
             self.last_bot_step = None
 
-            # ✅ PROFIT RESET CHECK
+            # PROFIT RESET CHECK
             reset_report = self.check_profit_reset()
             if reset_report:
                 notifications.append(reset_report)
@@ -953,32 +916,15 @@ class V15Engine:
                         f"⏭️ <b>SKIP</b> (Conf {conf:.1%} < {threshold:.1%})"
                     )
                 else:
+                    # ✅ SIGNAL
                     self.active_prediction = pred
                     self.last_state = self.get_state_key()
                     self.total_signals += 1
                     self.record_pending_models()
+                    self.last_bot_step = self.bot_step
 
-                    bot_step = self.bot_step
-                    bet1, bet2 = self.get_current_level_bet()
-
-                    if bot_step == 1:
-                        self.current_bet = bet1
-                        self.state = 'betting'
-                        bet_display = f"💰 Bet: <b>{bet1:,}</b> (Bet1)"
-                        action_display = "🎯 BET (Bet1)"
-                    elif bot_step == 2:
-                        self.current_bet = bet2
-                        self.state = 'betting'
-                        bet_display = f"💰 Bet: <b>{bet2:,}</b> (Bet2)"
-                        action_display = "🎯 BET (Bet2)"
-                    else:
-                        self.current_bet = 0
-                        self.state = 'waiting'
-                        self.rounds_in_wait += 1
-                        bet_display = f"⏸️ <b>SKIP</b> (Bot {bot_step}x)"
-                        action_display = "⏸️ WAITING for 1x"
-
-                    self.last_bot_step = bot_step
+                    # လက်ရှိ Bet
+                    bet_amount, bet_type = self.get_current_bet()
 
                     notifications.append(
                         f"💖 <b>Period {next_period_short}</b>\n"
@@ -986,12 +932,10 @@ class V15Engine:
                         f"📊 Conf: <b>{conf:.1%}</b>\n"
                         f"⚙️ {mode}\n"
                         f"━━━━━━━━━━━━━━━━━\n"
-                        f"🤖 Bot Step: <b>{bot_step}x</b>\n"
-                        f"🎮 Level: <b>{self.level}</b>\n"
-                        f"{bet_display}\n"
-                        f"{action_display}\n"
+                        f"🤖 Bot Step: <b>{self.bot_step}x</b>\n"
+                        f"🎮 Level: <b>{self.level}</b> | {bet_type}\n"
+                        f"💰 Bet: <b>{bet_amount:,}</b>\n"
                         f"━━━━━━━━━━━━━━━━━\n"
-                        f"🎯 Win Streak: {self.win_streak}/2\n"
                         f"🏆 Max Level: {self.max_level_reached}\n"
                         f"📉 Max DD: {self.max_loss_amount:,.0f}\n"
                         f"💵 Profit: {self.current_profit:+,.0f}\n"
@@ -1008,7 +952,7 @@ class V15Engine:
 # 🌐 API POLLER
 # ==========================================
 def run_bot():
-    print("🚀 V15.5 — Skip မပါ + 2-Win Reset Started", flush=True)
+    print("🚀 V15.6 — Level State Machine Started", flush=True)
     agent = V15Engine()
     last_processed_period = None
     url = CONFIG['api_url']
@@ -1055,14 +999,15 @@ def run_bot():
 @app.route('/')
 def home():
     if not global_agent:
-        return "<h3>🚀 V15.5 starting...</h3>"
+        return "<h3>🚀 V15.6 starting...</h3>"
     a = global_agent
+    bet_amount, bet_type = a.get_current_bet()
     return f"""
-    <h2>🚀 V15.5 — Skip မပါ + 2-Win Reset</h2>
+    <h2>🚀 V15.6 — Level State Machine</h2>
     <p><b>🤖 Bot Step:</b> {a.bot_step}x</p>
     <p><b>🎮 Level:</b> {a.level}</p>
-    <p><b>🎯 Win Streak:</b> {a.win_streak}/2</p>
-    <p><b>💰 Current Bet:</b> {a.current_bet:,}</p>
+    <p><b>📊 State:</b> {a.level_state}</p>
+    <p><b>💰 Current Bet:</b> {bet_amount:,} ({bet_type})</p>
     <p><b>🏆 Max Level:</b> {a.max_level_reached}</p>
     <p><b>📉 Max DD:</b> {a.max_loss_amount:+,.0f}</p>
     <p><b>💵 Current Profit:</b> {a.current_profit:+,.0f}</p>
@@ -1072,15 +1017,15 @@ def home():
 def stats():
     if global_agent:
         a = global_agent
-        bet1, bet2 = a.get_current_level_bet()
+        bet_amount, bet_type = a.get_current_bet()
         return {
-            "version": "V15.5",
+            "version": "V15.6",
             "bot_step": a.bot_step,
             "level": a.level,
-            "win_streak": a.win_streak,
+            "level_state": a.level_state,
+            "current_bet": bet_amount,
+            "bet_type": bet_type,
             "max_level": a.max_level_reached,
-            "current_bet1": bet1,
-            "current_bet2": bet2,
             "cycles": a.cycles_completed,
             "profit_resets": a.profit_resets,
             "signals": a.total_signals,
@@ -1091,7 +1036,6 @@ def stats():
             "total_loss": round(a.total_loss_amount, 2),
             "net_profit": round(a.current_profit, 2),
             "max_loss": round(a.max_loss_amount, 2),
-            "state": a.state,
         }
     return {"status": "initializing"}
 
@@ -1112,7 +1056,7 @@ def model_stats():
 
 @app.route('/health')
 def health():
-    return {"status": "ok", "version": "V15.5"}
+    return {"status": "ok", "version": "V15.6"}
 
 
 # ==========================================
