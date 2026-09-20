@@ -1,17 +1,16 @@
 """
-🚀 V17.0 — Multi-Agent Bot (Auto Reactivate + Advanced Features)
+🚀 V20.0 — Hybrid Bot (Chart Priority + Rare Skip)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Features:
-  1. 10 Agents + Auto Suspend/Reactivate
-  2. Shadow Tracking (Suspended Agents Run in Background)
-  3. Multi-Timeframe Analysis (Short/Medium/Long)
-  4. Confidence Calibration
-  5. Agent Correlation Tracking
-  6. Performance Analytics
-  7. Advanced Adaptive Threshold
-  8. Telegram Commands
-  9. Level State Machine
-  10. Profit Reset
+  1. Chart Priority (Trend Strong → Chart Override)
+  2. Conflict Detection (Chart vs Pattern)
+  3. Rare Skip (15-25% only)
+  4. Smart Combine (Agree/Override)
+  5. 3000 Candles (SQLite)
+  6. Auto Reactivate
+  7. Telegram Commands
+  8. Level State Machine
+  9. Profit Reset
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
@@ -20,6 +19,7 @@ import time
 import os
 import threading
 import math
+import sqlite3
 import numpy as np
 from collections import deque, Counter
 from datetime import datetime
@@ -28,9 +28,9 @@ from flask import Flask
 # ==========================================
 # 🔑 CREDENTIALS
 # ==========================================
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
-CHAT_ID = os.environ.get("CHAT_ID", "")
-LOTTERY_AUTH = os.environ.get("LOTTERY_AUTH", "")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8913070806:AAF3rP0zKJtofE-5KVesqcdoHzn7Go0avho")
+CHAT_ID = os.environ.get("CHAT_ID", "-1004402480797")
+LOTTERY_AUTH = os.environ.get("LOTTERY_AUTH", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOiIxNzg3OTgxNTA5IiwibmJmIjoiMTc4Nzk4MTUwOSIsImV4cCI6IjE3ODc5ODMzMDkiLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL2V4cGlyYXRpb24iOiI4LzI5LzIwMjYgMTI6MzE2NDkgUE0iLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL3JvbGUiOiJBY2Nlc3NfVG9rZW4iLCJVc2VySWQiOiIxMDEyMjEzIiwiVXNlck5hbWUiOiI5NTk3NDA5MzkzNzAiLCJVc2VyUGhvdG8iOiI5IiwiTmlja05hbWUiOiJUaGVrR3lpIiwiQW1vdW50IjoiODcuMzAiLCJJbnRlZ3JhbCI6IjAiLCJMb2dpbk1hcmsiOiJINSIsImxvZ2luVGltZSI6IjcvMjkvMjAyNiAxMjowMTo0OSBQTSIsImxvZ2luSVBBZGRyZXNzIjoiNDUuNDEuMTA0LjI0MCIsImRiTnVtYmVyIjoiMCIsIklzdmFsaWRhdG9yIjoiMCIsIktleUNvZGUiOiIzMjMzMiIsImRva2VuVHlwZSI6IjJBY2Nlc3NfVG9rZW4iLCJob25lVHlwZSI6IjAiLCJVc2VyVHlwZSI6IjAiLCJVc2VyTmFtZ2UiOiIuIiwiaXNzIjoiand0SXNzdWVyIiwiYXVkIjoibG90dGVyeVRpY2tldCJ9.ZL0Y9gexUTCsKwWeZhCLAAw8AABEYJt0GnIzIviMG4g")
 
 COLOUR_MAP = {
     0: "Violet+Red", 1: "Green", 2: "Red", 3: "Green", 4: "Red",
@@ -42,14 +42,19 @@ COLOUR_MAP = {
 # ==========================================
 CONFIG = {
     "window_size": 60,
-    "min_data_before_signal": 25,
-    "adaptive_base_threshold": 0.58,
-    "min_margin": 0.12,
-    "min_agents_for_signal": 2,
+    "candle_max_size": 3000,
+    "candle_db_path": "candles.db",
+    "min_data_before_signal": 30,
+    "adaptive_base_threshold": 0.55,
+    "min_margin": 0.08,
+    "min_agents_for_signal": 1,
     "min_agent_wr": 0.50,
     "reactivate_wr": 0.55,
     "suspend_wr": 0.45,
     "min_sample": 30,
+    "chart_weight": 0.60,
+    "pattern_weight": 0.40,
+    "conflict_threshold": 0.05,
     "api_url": "https://6lotteryapi.com/api/webapi/GetNoaverageEmerdList",
     "payout_rate": 0.96,
     "profit_reset_threshold": 100000,
@@ -57,7 +62,7 @@ CONFIG = {
 }
 
 # ==========================================
-# 📊 LEVEL TABLE (1-20)
+# 📊 LEVEL TABLE
 # ==========================================
 LEVEL_TABLE = {
     1:  {"bet1": 1000,    "bet2": 2000},
@@ -84,7 +89,6 @@ LEVEL_TABLE = {
 
 
 def get_level_bet(level):
-    """Level ရဲ့ Bet Size"""
     if level in LEVEL_TABLE:
         return LEVEL_TABLE[level]
     a = LEVEL_TABLE[19]["bet1"]
@@ -143,11 +147,13 @@ def calculate_dfa(series, min_scale=6, max_scale=None):
 # ==========================================
 class FeatureEngineer:
     @staticmethod
-    def encode(r): return 1 if r == "Big" else 0
+    def encode(r):
+        return 1 if r == "Big" else 0
 
     @staticmethod
     def streak(encoded):
-        if not encoded: return 0
+        if not encoded:
+            return 0
         count = 1
         for i in range(len(encoded) - 2, -1, -1):
             if encoded[i] == encoded[-1]:
@@ -158,7 +164,8 @@ class FeatureEngineer:
 
     @staticmethod
     def alternating_streak(encoded):
-        if len(encoded) < 2: return 0
+        if len(encoded) < 2:
+            return 0
         count = 1
         for i in range(len(encoded) - 2, -1, -1):
             if encoded[i] != encoded[i + 1]:
@@ -169,28 +176,283 @@ class FeatureEngineer:
 
     @staticmethod
     def entropy(encoded, window=20):
-        if len(encoded) < window: return 0.5
+        if len(encoded) < window:
+            return 0.5
         recent = encoded[-window:]
         p_big = sum(recent) / window
         p_small = 1 - p_big
-        if p_big == 0 or p_small == 0: return 0.0
+        if p_big == 0 or p_small == 0:
+            return 0.0
         return -(p_big * math.log2(p_big) + p_small * math.log2(p_small))
 
     @staticmethod
     def std(lst):
-        if len(lst) < 2: return 0.0
+        if len(lst) < 2:
+            return 0.0
         mean = sum(lst) / len(lst)
         return math.sqrt(sum((x - mean) ** 2 for x in lst) / len(lst))
 
     @staticmethod
     def flip_rate(encoded):
-        if len(encoded) < 2: return 0.0
+        if len(encoded) < 2:
+            return 0.0
         flips = sum(1 for i in range(len(encoded) - 1) if encoded[i] != encoded[i + 1])
         return flips / (len(encoded) - 1)
 
 
 # ==========================================
-# 🎯 AGENT 1: MEAN REVERSION
+# 📊 CANDLE DB (SQLite — 3000 Candles)
+# ==========================================
+class CandleDB:
+    def __init__(self, db_path="candles.db", max_size=3000):
+        self.db_path = db_path
+        self.max_size = max_size
+        self.lock = threading.Lock()
+        self.candles = deque(maxlen=max_size)
+        self.prev_close = 5.0
+        self.last_period = None
+        self._init_db()
+        self._load_recent()
+
+    def _init_db(self):
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS candles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    period TEXT UNIQUE,
+                    digit INTEGER,
+                    open REAL,
+                    high REAL,
+                    low REAL,
+                    close REAL,
+                    color TEXT,
+                    big_small TEXT,
+                    timestamp INTEGER
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_period ON candles(period)")
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"DB Init Error: {e}", flush=True)
+
+    def _load_recent(self):
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT period, digit, open, high, low, close, color, big_small, timestamp
+                FROM candles ORDER BY id DESC LIMIT ?
+            """, (self.max_size,))
+            rows = cursor.fetchall()
+            conn.close()
+
+            for row in reversed(rows):
+                self.candles.append({
+                    "period": row[0],
+                    "digit": row[1],
+                    "open": row[2],
+                    "high": row[3],
+                    "low": row[4],
+                    "close": row[5],
+                    "color": row[6],
+                    "big_small": row[7],
+                    "timestamp": row[8],
+                })
+                self.prev_close = row[5]
+                self.last_period = row[0]
+
+            print(f"✅ Loaded {len(self.candles)} candles from DB", flush=True)
+        except Exception as e:
+            print(f"Load Error: {e}", flush=True)
+
+    def add(self, digit, period=None):
+        try:
+            if period == self.last_period:
+                return None
+
+            open_price = self.prev_close
+            close_price = float(digit)
+            high_price = max(open_price, close_price) + 0.5
+            low_price = min(open_price, close_price) - 0.5
+
+            candle = {
+                "period": period or str(int(time.time())),
+                "digit": digit,
+                "open": open_price,
+                "high": high_price,
+                "low": low_price,
+                "close": close_price,
+                "color": "green" if digit >= 5 else "red",
+                "big_small": "Big" if digit >= 5 else "Small",
+                "timestamp": int(time.time()),
+            }
+
+            with self.lock:
+                self.candles.append(candle)
+                self.prev_close = close_price
+                self.last_period = candle["period"]
+
+                try:
+                    conn = sqlite3.connect(self.db_path)
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO candles
+                        (period, digit, open, high, low, close, color, big_small, timestamp)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        candle["period"], candle["digit"],
+                        candle["open"], candle["high"],
+                        candle["low"], candle["close"],
+                        candle["color"], candle["big_small"],
+                        candle["timestamp"]
+                    ))
+                    conn.commit()
+                    conn.close()
+                except Exception as e:
+                    print(f"DB Insert Error: {e}", flush=True)
+
+                self._prune()
+
+            return candle
+        except Exception as e:
+            print(f"Candle Add Error: {e}", flush=True)
+            return None
+
+    def _prune(self):
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM candles WHERE id NOT IN (
+                    SELECT id FROM candles ORDER BY id DESC LIMIT ?
+                )
+            """, (self.max_size,))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"Prune Error: {e}", flush=True)
+
+    def get_candles(self):
+        with self.lock:
+            return list(self.candles)
+
+    def get_count(self):
+        return len(self.candles)
+
+    def get_closes(self):
+        return [c["close"] for c in self.candles]
+
+    def get_highs(self):
+        return [c["high"] for c in self.candles]
+
+    def get_lows(self):
+        return [c["low"] for c in self.candles]
+
+
+# ==========================================
+# 📊 CHART WEB STYLE ANALYZER
+# ==========================================
+class ChartWebAnalyzer:
+    """Chart Web ကအတိုင်း Analyze"""
+
+    def analyze(self, candles):
+        try:
+            if len(candles) < 20:
+                return None, 0, "Warming"
+
+            closes = [c["close"] for c in candles]
+            highs = [c["high"] for c in candles]
+            lows = [c["low"] for c in candles]
+
+            # 1. Trend Detection
+            recent_highs = highs[-10:]
+            recent_lows = lows[-10:]
+
+            hh = all(recent_highs[i] <= recent_highs[i + 1] for i in range(len(recent_highs) - 1))
+            hl = all(recent_lows[i] <= recent_lows[i + 1] for i in range(len(recent_lows) - 1))
+            lh = all(recent_highs[i] >= recent_highs[i + 1] for i in range(len(recent_highs) - 1))
+            ll = all(recent_lows[i] >= recent_lows[i + 1] for i in range(len(recent_lows) - 1))
+
+            if hh and hl:
+                return "Big", 0.65, "📈 Uptrend"
+
+            if lh and ll:
+                return "Small", 0.65, "📉 Downtrend"
+
+            # 2. S/R Detection
+            resistance = max(highs[-20:])
+            support = min(lows[-20:])
+            current = closes[-1]
+
+            range_size = resistance - support
+            if range_size == 0:
+                range_size = 1.0
+
+            position = (current - support) / range_size
+
+            if position > 0.85:
+                return "Small", 0.60, "🔴 Resistance"
+
+            if position < 0.15:
+                return "Big", 0.60, "🟢 Support"
+
+            # 3. EMA
+            ema9 = self._ema(closes, 9)
+            ema21 = self._ema(closes, 21)
+            ema50 = self._ema(closes, 50)
+
+            if ema9 > ema21 > ema50:
+                return "Big", 0.60, "📈 EMA Up"
+
+            if ema9 < ema21 < ema50:
+                return "Small", 0.60, "📉 EMA Down"
+
+            # 4. Momentum
+            if len(closes) >= 5:
+                momentum = closes[-1] - closes[-5]
+
+                if momentum > 1.5:
+                    return "Big", 0.58, "🚀 Momentum Up"
+
+                if momentum < -1.5:
+                    return "Small", 0.58, "💥 Momentum Down"
+
+            # 5. Trend Line (Regression)
+            if len(closes) >= 20:
+                x = np.arange(len(closes[-20:]))
+                y = np.array(closes[-20:])
+                slope, _ = np.polyfit(x, y, 1)
+
+                if slope > 0.10:
+                    return "Big", 0.56, "📈 Trend Line Up"
+
+                if slope < -0.10:
+                    return "Small", 0.56, "📉 Trend Line Down"
+
+            return None, 0, "Neutral"
+
+        except Exception as e:
+            print(f"ChartAnalyzer Error: {e}", flush=True)
+            return None, 0, "Error"
+
+    def _ema(self, prices, period):
+        try:
+            if len(prices) < period:
+                return prices[-1] if prices else 0
+            alpha = 2 / (period + 1)
+            ema = prices[0]
+            for p in prices[1:]:
+                ema = (p * alpha) + (ema * (1 - alpha))
+            return ema
+        except Exception:
+            return 0
+
+
+# ==========================================
+# 🎯 PATTERN AGENTS
 # ==========================================
 class MeanReversionAgent:
     NAME = "mean_rev"
@@ -216,9 +478,6 @@ class MeanReversionAgent:
             return None, 0
 
 
-# ==========================================
-# 🎯 AGENT 2: MARKOV
-# ==========================================
 class MarkovAgent:
     NAME = "markov"
 
@@ -250,9 +509,6 @@ class MarkovAgent:
             return None, 0
 
 
-# ==========================================
-# 🎯 AGENT 3: KNN
-# ==========================================
 class KNNAgent:
     NAME = "knn"
 
@@ -260,27 +516,23 @@ class KNNAgent:
         try:
             if len(encoded) < 25:
                 return ("Big" if encoded[-1] == 1 else "Small"), 0.51
-            target_pattern = list(encoded[-k:])
+            target = list(encoded[-k:])
             matches = []
             for i in range(len(encoded) - k - 1):
-                window_slice = list(encoded[i:i + k])
-                if window_slice == target_pattern:
+                if list(encoded[i:i + k]) == target:
                     matches.append(encoded[i + k])
             if not matches:
                 return ("Big" if encoded[-1] == 1 else "Small"), 0.51
-            big_count = sum(matches)
-            small_count = len(matches) - big_count
-            if big_count >= small_count:
-                return "Big", min(0.50 + (big_count / len(matches)) * 0.25, 0.75)
+            big_c = sum(matches)
+            small_c = len(matches) - big_c
+            if big_c >= small_c:
+                return "Big", min(0.50 + (big_c / len(matches)) * 0.25, 0.75)
             else:
-                return "Small", min(0.50 + (small_count / len(matches)) * 0.25, 0.75)
+                return "Small", min(0.50 + (small_c / len(matches)) * 0.25, 0.75)
         except Exception:
             return None, 0
 
 
-# ==========================================
-# 🎯 AGENT 4: RUNS TEST
-# ==========================================
 class RunsTestAgent:
     NAME = "runs_test"
 
@@ -299,19 +551,16 @@ class RunsTestAgent:
             if variance <= 0:
                 return ("Big" if encoded[-1] == 1 else "Small"), 0.51
             z = (runs - mu) / math.sqrt(variance)
-            last_val = encoded[-1]
+            last = encoded[-1]
             if z < -1.0:
-                return ("Big" if last_val == 1 else "Small"), 0.58
+                return ("Big" if last == 1 else "Small"), 0.58
             elif z > 1.0:
-                return ("Small" if last_val == 1 else "Big"), 0.58
-            return ("Big" if last_val == 1 else "Small"), 0.51
+                return ("Small" if last == 1 else "Big"), 0.58
+            return ("Big" if last == 1 else "Small"), 0.51
         except Exception:
             return None, 0
 
 
-# ==========================================
-# 🎯 AGENT 5: FIBONACCI
-# ==========================================
 class FibonacciAgent:
     NAME = "fibonacci"
 
@@ -325,8 +574,7 @@ class FibonacciAgent:
                 if len(encoded) < fib + 1:
                     continue
                 if encoded[-1] == encoded[-(fib + 1)]:
-                    if fib > 1 and len(encoded) >= fib:
-                        votes[encoded[-(fib - 1)]] += 1.0 / fib
+                    votes[encoded[-(fib - 1)]] += 1.0 / fib
             total = votes[0] + votes[1]
             if total < 0.3:
                 return None, 0
@@ -337,9 +585,6 @@ class FibonacciAgent:
             return None, 0
 
 
-# ==========================================
-# 🎯 AGENT 6: PATTERN
-# ==========================================
 class PatternAgent:
     NAME = "pattern"
 
@@ -364,9 +609,6 @@ class PatternAgent:
             return None, 0
 
 
-# ==========================================
-# 🎯 AGENT 7: BREAKOUT
-# ==========================================
 class BreakoutAgent:
     NAME = "breakout"
 
@@ -374,8 +616,7 @@ class BreakoutAgent:
         try:
             if len(encoded) < 8:
                 return None, 0
-            recent_5 = encoded[-5:]
-            recent_std = FeatureEngineer.std(recent_5)
+            recent_std = FeatureEngineer.std(encoded[-5:])
             short_mom = sum(encoded[-3:]) / 3
             prev_mom = sum(encoded[-6:-3]) / 3 if len(encoded) >= 6 else 0.5
             accel = short_mom - prev_mom
@@ -391,9 +632,6 @@ class BreakoutAgent:
             return None, 0
 
 
-# ==========================================
-# 🎯 AGENT 8: TREND
-# ==========================================
 class TrendAgent:
     NAME = "trend"
 
@@ -419,9 +657,6 @@ class TrendAgent:
             return None, 0
 
 
-# ==========================================
-# 🎯 AGENT 9: DIGIT BIAS
-# ==========================================
 class DigitBiasAgent:
     NAME = "digit_bias"
 
@@ -429,8 +664,8 @@ class DigitBiasAgent:
         try:
             if len(digit_history) < 15:
                 return None, 0
-            recent_digits = list(digit_history)[-10:]
-            avg_val = sum(recent_digits) / len(recent_digits)
+            recent = list(digit_history)[-10:]
+            avg_val = sum(recent) / len(recent)
             if avg_val > 5.5:
                 return "Small", min(0.55 + (avg_val - 4.5) * 0.05, 0.70)
             elif avg_val < 3.5:
@@ -441,9 +676,6 @@ class DigitBiasAgent:
             return None, 0
 
 
-# ==========================================
-# 🎯 AGENT 10: EMA RIBBON
-# ==========================================
 class EMARibbonAgent:
     NAME = "ema_ribbon"
 
@@ -468,47 +700,6 @@ class EMARibbonAgent:
                 conf = 0.55 + min((0.5 - ema_fast) * 0.3, 0.20)
                 return "Small", conf
             return ("Big" if ema_fast >= 0.5 else "Small"), 0.52
-        except Exception:
-            return None, 0
-
-
-# ==========================================
-# 🎯 AGENT 11: MULTI-TIMEFRAME
-# ==========================================
-class MultiTimeframeAgent:
-    NAME = "multi_tf"
-
-    def _predict_tf(self, data):
-        if len(data) < 5:
-            return None
-        big_ratio = sum(data) / len(data)
-        if big_ratio > 0.60:
-            return "Big"
-        elif big_ratio < 0.40:
-            return "Small"
-        return None
-
-    def predict(self, encoded, window):
-        try:
-            if len(encoded) < 20:
-                return None, 0
-            short = self._predict_tf(encoded[-10:])
-            med = self._predict_tf(encoded[-30:]) if len(encoded) >= 30 else None
-            long = self._predict_tf(encoded[-60:]) if len(encoded) >= 60 else None
-            votes = [v for v in [short, med, long] if v]
-            if len(votes) < 2:
-                return None, 0
-            big_count = sum(1 for v in votes if v == "Big")
-            small_count = len(votes) - big_count
-            if big_count == 3:
-                return "Big", 0.75
-            elif small_count == 3:
-                return "Small", 0.75
-            elif big_count == 2:
-                return "Big", 0.60
-            elif small_count == 2:
-                return "Small", 0.60
-            return None, 0
         except Exception:
             return None, 0
 
@@ -587,42 +778,10 @@ class ConfidenceCalibrator:
 
 
 # ==========================================
-# 📊 PERFORMANCE ANALYTICS
-# ==========================================
-class PerformanceAnalytics:
-    def __init__(self):
-        self.daily_stats = {}
-        self.recent_rounds = deque(maxlen=100)
-
-    def record(self, won, profit):
-        try:
-            date_key = datetime.now().strftime("%Y-%m-%d")
-            if date_key not in self.daily_stats:
-                self.daily_stats[date_key] = {"wins": 0, "losses": 0, "profit": 0.0}
-            if won:
-                self.daily_stats[date_key]["wins"] += 1
-            else:
-                self.daily_stats[date_key]["losses"] += 1
-            self.daily_stats[date_key]["profit"] += profit
-
-            self.recent_rounds.append({"won": won, "profit": profit, "time": datetime.now()})
-        except Exception:
-            pass
-
-    def get_today(self):
-        try:
-            date_key = datetime.now().strftime("%Y-%m-%d")
-            return self.daily_stats.get(date_key, {"wins": 0, "losses": 0, "profit": 0.0})
-        except Exception:
-            return {"wins": 0, "losses": 0, "profit": 0.0}
-
-
-# ==========================================
-# 🎯 META-AGENT (10 Agents + Auto Reactivate)
+# 🎯 META-AGENT (Chart Priority)
 # ==========================================
 class MetaAgent:
     def __init__(self):
-        # 10 Agents — All Always Run
         self.all_agents = {
             "mean_rev": MeanReversionAgent(),
             "markov": MarkovAgent(),
@@ -636,25 +795,17 @@ class MetaAgent:
             "ema_ribbon": EMARibbonAgent(),
         }
 
-        # Multi-Timeframe Agent (New)
-        self.multi_tf = MultiTimeframeAgent()
+        self.chart_analyzer = ChartWebAnalyzer()
 
-        # Active Agents (Bet ထိုးတာ)
         self.active_agents = [
             "mean_rev", "markov", "knn", "runs_test",
-            "fibonacci", "pattern", "multi_tf"
+            "fibonacci", "pattern"
         ]
-
-        # Suspended Agents
         self.suspended_agents = [
             "breakout", "trend", "digit_bias", "ema_ribbon"
         ]
 
-        # Thompson Sampling
         self.thompson_stats = {k: {"a": 2, "b": 2} for k in self.all_agents.keys()}
-        self.thompson_stats["multi_tf"] = {"a": 2, "b": 2}
-
-        # Accuracy Tracking
         self.agent_acc = {k: deque(maxlen=50) for k in self.thompson_stats}
         self.pending_agents = {}
 
@@ -667,32 +818,27 @@ class MetaAgent:
             return 0.50
 
     def get_active_agents(self, regime):
-        """Regime + WR Filter + Active List"""
         try:
             base = {
-                "trending": ["mean_rev", "markov", "knn", "multi_tf", "fibonacci", "trend", "ema_ribbon"],
-                "sideway": ["mean_rev", "pattern", "fibonacci", "knn", "markov", "multi_tf"],
-                "choppy": ["pattern", "fibonacci", "mean_rev", "markov", "knn", "multi_tf"],
-                "volatile": ["markov", "knn", "mean_rev", "fibonacci", "runs_test", "breakout", "multi_tf"],
-                "neutral": ["mean_rev", "markov", "knn", "runs_test", "fibonacci", "pattern", "multi_tf"],
-                "unknown": ["mean_rev", "markov", "knn", "runs_test", "fibonacci", "pattern", "multi_tf"],
+                "trending": ["mean_rev", "markov", "knn", "fibonacci", "pattern", "trend", "ema_ribbon"],
+                "sideway": ["mean_rev", "pattern", "fibonacci", "knn", "markov"],
+                "choppy": ["pattern", "fibonacci", "mean_rev", "markov", "knn"],
+                "volatile": ["markov", "knn", "mean_rev", "fibonacci", "runs_test", "breakout"],
+                "neutral": ["mean_rev", "markov", "knn", "runs_test", "fibonacci", "pattern"],
+                "unknown": ["mean_rev", "markov", "knn", "runs_test", "fibonacci", "pattern"],
             }
             candidates = base.get(regime, base["neutral"])
-
-            # Filter by Active List + WR
             filtered = []
             for name in candidates:
                 if name in self.active_agents:
                     wr = self.get_agent_wr(name)
                     if wr >= CONFIG['min_agent_wr'] or len(self.agent_acc[name]) < CONFIG['min_sample']:
                         filtered.append(name)
-
             return filtered if filtered else candidates[:3]
         except Exception:
             return ["mean_rev", "markov", "knn"]
 
     def check_reactivation(self):
-        """Suspended Agent — WR ကောင်းလား စစ်"""
         try:
             reactivated = []
             for name in self.suspended_agents[:]:
@@ -707,12 +853,9 @@ class MetaAgent:
             return []
 
     def check_suspension(self):
-        """Active Agent — WR ကျလား စစ်"""
         try:
             suspended = []
             for name in self.active_agents[:]:
-                if name == "multi_tf":
-                    continue  # Multi-TF — Suspend မလုပ်
                 if len(self.agent_acc[name]) >= CONFIG['min_sample']:
                     wr = sum(self.agent_acc[name]) / len(self.agent_acc[name])
                     if wr < CONFIG['suspend_wr']:
@@ -729,14 +872,22 @@ class MetaAgent:
             thompson = float(np.random.beta(stats["a"], stats["b"]))
             if len(self.agent_acc[name]) >= 20:
                 acc = sum(self.agent_acc[name]) / len(self.agent_acc[name])
-                acc_weight = acc ** 2
-                return thompson * acc_weight * 3
+                return thompson * (acc ** 2) * 3
             return thompson
         except Exception:
             return 1.0
 
-    def predict(self, encoded, window, regime, digit_history):
+    def predict(self, encoded, window, regime, digit_history, candles):
+        """✅ V20.0 — Chart Priority + Rare Skip"""
         try:
+            # ==========================================
+            # 1. Chart Analyze
+            # ==========================================
+            chart_pred, chart_conf, chart_mode = self.chart_analyzer.analyze(candles)
+
+            # ==========================================
+            # 2. Pattern Agents
+            # ==========================================
             active = self.get_active_agents(regime)
             signals = {}
 
@@ -751,7 +902,6 @@ class MetaAgent:
                 "trend": lambda: self.all_agents["trend"].predict(encoded, window),
                 "digit_bias": lambda: self.all_agents["digit_bias"].predict(digit_history),
                 "ema_ribbon": lambda: self.all_agents["ema_ribbon"].predict(encoded, window),
-                "multi_tf": lambda: self.multi_tf.predict(encoded, window),
             }
 
             for name in active:
@@ -762,36 +912,76 @@ class MetaAgent:
                 except Exception as e:
                     print(f"Agent {name} Error: {e}", flush=True)
 
-            if len(signals) < CONFIG['min_agents_for_signal']:
-                return None, 0, f"Agents {len(signals)}/{len(active)}", regime
-
-            # Weighted Voting
-            big_score = 0.0
-            small_score = 0.0
+            # Pattern Voting
+            pattern_big = 0.0
+            pattern_small = 0.0
 
             for name, (pred, conf) in signals.items():
                 weight = self.get_thompson_weight(name)
                 weighted = conf * weight
                 if pred == "Big":
-                    big_score += weighted
+                    pattern_big += weighted
                 else:
-                    small_score += weighted
+                    pattern_small += weighted
 
-            total = big_score + small_score
-            if total == 0:
-                return None, 0, "No Vote", regime
+            pattern_total = pattern_big + pattern_small
 
-            margin = abs(big_score - small_score) / total
-            if margin < CONFIG['min_margin']:
-                return None, 0, f"Low Margin {margin:.0%}", regime
-
-            confidence = max(big_score, small_score) / total
-            confidence = max(0.52, min(confidence, 0.92))
-
-            if big_score > small_score:
-                return "Big", confidence, f"🎯 Agent[{len(signals)}] {regime}", regime
+            if pattern_total > 0:
+                if pattern_big > pattern_small:
+                    pattern_pred = "Big"
+                    pattern_conf = pattern_big / pattern_total
+                else:
+                    pattern_pred = "Small"
+                    pattern_conf = pattern_small / pattern_total
             else:
-                return "Small", confidence, f"🎯 Agent[{len(signals)}] {regime}", regime
+                pattern_pred = None
+                pattern_conf = 0
+
+            # ==========================================
+            # 3. V20.0 — Smart Combine
+            # ==========================================
+            # Case 1: Chart ရှိ + Pattern ရှိ
+            if chart_pred and pattern_pred:
+                # Agree
+                if chart_pred == pattern_pred:
+                    confidence = max(chart_conf, pattern_conf)
+                    return chart_pred, confidence, f"🎯 Chart+Pattern Agree [{len(signals)}]", regime
+
+                # Conflict
+                else:
+                    # Chart Trend Priority
+                    if chart_mode in ["📈 Uptrend", "📉 Downtrend"]:
+                        return chart_pred, chart_conf, f"🎯 Chart Priority ({chart_mode})", regime
+
+                    # Chart Confidence မြင့်ရင် Chart
+                    if chart_conf > pattern_conf + CONFIG['conflict_threshold']:
+                        return chart_pred, chart_conf, f"🎯 Chart Override", regime
+
+                    # Pattern Confidence မြင့်ရင် Pattern
+                    if pattern_conf > chart_conf + CONFIG['conflict_threshold']:
+                        return pattern_pred, pattern_conf, f"🎯 Pattern Override", regime
+
+                    # Weight-based Fallback
+                    chart_score = chart_conf * CONFIG['chart_weight']
+                    pattern_score = pattern_conf * CONFIG['pattern_weight']
+
+                    if chart_score > pattern_score:
+                        return chart_pred, chart_conf, f"🎯 Chart Weight Win", regime
+                    else:
+                        return pattern_pred, pattern_conf, f"🎯 Pattern Weight Win", regime
+
+            # Case 2: Chart Only
+            elif chart_pred:
+                return chart_pred, chart_conf, f"🎯 Chart Only ({chart_mode})", regime
+
+            # Case 3: Pattern Only
+            elif pattern_pred:
+                return pattern_pred, pattern_conf, f"🎯 Pattern Only [{len(signals)}]", regime
+
+            # Case 4: Both None — Rare Skip
+            else:
+                return None, 0, "No Signal", regime
+
         except Exception as e:
             print(f"MetaAgent Error: {e}", flush=True)
             return None, 0, "Error", regime
@@ -812,9 +1002,8 @@ class MetaAgent:
             print(f"update_accuracy Error: {e}", flush=True)
 
     def record_pending(self, encoded, window, regime, digit_history):
-        """Shadow Track — All Agents (Active + Suspended)"""
         try:
-            all_names = list(self.all_agents.keys()) + ["multi_tf"]
+            all_names = list(self.all_agents.keys())
             agents_map = {
                 "mean_rev": lambda: self.all_agents["mean_rev"].predict(encoded, window),
                 "markov": lambda: self.all_agents["markov"].predict(encoded, window),
@@ -826,9 +1015,7 @@ class MetaAgent:
                 "trend": lambda: self.all_agents["trend"].predict(encoded, window),
                 "digit_bias": lambda: self.all_agents["digit_bias"].predict(digit_history),
                 "ema_ribbon": lambda: self.all_agents["ema_ribbon"].predict(encoded, window),
-                "multi_tf": lambda: self.multi_tf.predict(encoded, window),
             }
-
             self.pending_agents = {}
             for name in all_names:
                 try:
@@ -842,25 +1029,29 @@ class MetaAgent:
 
 
 # ==========================================
-# 🎯 V17.0 ENGINE
+# 🎯 V20.0 ENGINE
 # ==========================================
-class V17Engine:
+class V20Engine:
     def __init__(self):
         global global_agent
         global_agent = self
         self.lock = threading.Lock()
         self.window = deque(maxlen=CONFIG['window_size'])
         self.digit_history = deque(maxlen=120)
+        self.candle_db = CandleDB(
+            db_path=CONFIG['candle_db_path'],
+            max_size=CONFIG['candle_max_size']
+        )
 
         self.active_prediction = None
         self.last_state = None
         self.last_digit = None
         self.last_bot_step = None
+        self.last_conf = 0.5
 
         self.market_detector = MarketDetector()
         self.meta_agent = MetaAgent()
         self.calibrator = ConfidenceCalibrator()
-        self.analytics = PerformanceAnalytics()
         self.current_regime = "unknown"
 
         self.bot_step = 1
@@ -949,7 +1140,7 @@ class V17Engine:
 
     def check_profit_reset(self):
         if self.current_profit >= CONFIG['profit_reset_threshold']:
-            old_max_level = self.max_level_reached
+            old_max = self.max_level_reached
             report = (
                 f"🎉 <b>PROFIT RESET</b>\n\n"
                 f"💰 Net Profit: <b>+{self.current_profit:,.0f}</b>\n\n"
@@ -957,7 +1148,7 @@ class V17Engine:
                 f"📈 Total Profit: <b>+{self.total_profit:,.0f}</b>\n"
                 f"📉 Total Loss: <b>-{self.total_loss_amount:,.0f}</b>\n"
                 f"🔻 Max DD: <b>{self.max_loss_amount:,.0f}</b>\n\n"
-                f"🏆 Max Level: <b>{old_max_level}</b>\n"
+                f"🏆 Max Level: <b>{old_max}</b>\n"
                 f"🔄 Reset → Level 1"
             )
             self.total_profit = 0.0
@@ -975,47 +1166,29 @@ class V17Engine:
         return None
 
     def get_threshold(self):
-        """Advanced Adaptive Threshold"""
         base = CONFIG['adaptive_base_threshold']
-
-        # 1. Recent WR
         if len(self.recent_results) >= 20:
             recent_wr = sum(self.recent_results) / len(self.recent_results)
-            if recent_wr >= 0.65: base -= 0.05
-            elif recent_wr >= 0.55: base -= 0.02
-            elif recent_wr < 0.45: base += 0.05
-
-        # 2. Regime
-        if self.current_regime == "choppy":
-            base += 0.03
-        elif self.current_regime == "trending":
-            base -= 0.02
-
-        # 3. Volatility
-        if len(self.window) >= 20:
-            encoded = [FeatureEngineer.encode(r) for r in list(self.window)[-20:]]
-            std = FeatureEngineer.std(encoded)
-            if std > 0.48:
-                base += 0.02
-
-        return max(0.50, min(base, 0.70))
+            if recent_wr >= 0.65: base -= 0.03
+            elif recent_wr < 0.45: base += 0.03
+        return max(0.50, min(base, 0.65))
 
     def get_consensus(self):
         try:
             encoded = [FeatureEngineer.encode(r) for r in self.window]
-            regime, strength = self.market_detector.detect(encoded)
+            candles = self.candle_db.get_candles()
+
+            regime, _ = self.market_detector.detect(encoded)
             self.current_regime = regime
 
             pred, conf, mode, regime = self.meta_agent.predict(
-                encoded, self.window, regime, self.digit_history
+                encoded, self.window, regime, self.digit_history, candles
             )
 
             if pred is None:
                 return None, 0, mode, regime
 
-            # Calibrate confidence
             calib_conf = self.calibrator.calibrate(conf)
-
             threshold = self.get_threshold()
             if calib_conf < threshold:
                 return None, 0, f"Low Conf {calib_conf:.1%}", regime
@@ -1039,6 +1212,7 @@ class V17Engine:
         if digit is not None:
             self.last_digit = digit
             self.digit_history.append(digit)
+            self.candle_db.add(digit, period=api_period)
 
         # Verify Previous
         if self.active_prediction is not None and self.last_state is not None:
@@ -1046,6 +1220,7 @@ class V17Engine:
             self.recent_results.append(1 if bot_won else 0)
 
             self.meta_agent.update_accuracy(api_result)
+            self.calibrator.record(self.last_conf, bot_won)
 
             if bot_won:
                 self.total_wins += 1
@@ -1062,14 +1237,6 @@ class V17Engine:
                 profit_amount = -bet_amount
                 self.total_loss_amount += bet_amount
                 self.current_profit -= bet_amount
-
-            # Calibrator update
-            if self.active_prediction is not None:
-                # Use last conf
-                pass
-
-            # Analytics
-            self.analytics.record(bot_won, profit_amount if bot_won else -bet_amount)
 
             self.update_max_tracking()
             action, old_level, old_state = self.on_result(bot_won)
@@ -1099,20 +1266,14 @@ class V17Engine:
                     f"💰 Next Bet1: {get_level_bet(self.level)['bet1']:,}"
                 )
 
-            # Check Reactivation/Suspension
+            # Reactivation/Suspension
             reactivated = self.meta_agent.check_reactivation()
             for name, wr in reactivated:
-                notifications.append(
-                    f"✅ <b>Agent Reactivated</b>\n"
-                    f"{name}: {wr:.1%}"
-                )
+                notifications.append(f"✅ <b>Agent Reactivated</b>\n{name}: {wr:.1%}")
 
             suspended = self.meta_agent.check_suspension()
             for name, wr in suspended:
-                notifications.append(
-                    f"⏸️ <b>Agent Suspended</b>\n"
-                    f"{name}: {wr:.1%}"
-                )
+                notifications.append(f"⏸️ <b>Agent Suspended</b>\n{name}: {wr:.1%}")
 
             self.update_bot_step(bot_won)
             self.active_prediction = None
@@ -1217,8 +1378,9 @@ def poll_telegram(agent):
                             f"📉 Max DD: {agent.max_loss_amount:+,.0f}\n"
                             f"💵 Profit: {agent.current_profit:+,.0f}\n"
                             f"📊 WR: {agent.get_wr():.1f}%\n"
-                            f"📈 Total: {agent.total_wins}W / {agent.total_losses}L\n"
-                            f"🎯 Signals: {agent.total_signals}"
+                            f"📈 {agent.total_wins}W / {agent.total_losses}L\n"
+                            f"🎯 Signals: {agent.total_signals}\n"
+                            f"🕯️ Candles: {agent.candle_db.get_count()}"
                         )
 
                     elif text == "/reset":
@@ -1247,7 +1409,6 @@ def poll_telegram(agent):
                                 stats_list.append((name, acc, len(acc_deque)))
                             else:
                                 stats_list.append((name, 0, len(acc_deque)))
-
                         stats_list.sort(key=lambda x: x[1], reverse=True)
                         for name, acc, n in stats_list:
                             status = "✅" if name in agent.meta_agent.active_agents else "⏸️"
@@ -1255,7 +1416,6 @@ def poll_telegram(agent):
                                 msg_text += f"{status} <b>{name}</b>: {acc:.1%} (n={n})\n"
                             else:
                                 msg_text += f"{status} {name}: warming ({n})\n"
-
                         msg_text += f"\n<b>Active:</b> {len(agent.meta_agent.active_agents)}"
                         msg_text += f"\n<b>Suspended:</b> {len(agent.meta_agent.suspended_agents)}"
                         agent.send_telegram(msg_text)
@@ -1289,10 +1449,9 @@ def poll_telegram(agent):
 # 🌐 API POLLER
 # ==========================================
 def run_bot():
-    print("🚀 V17.0 — Multi-Agent + Auto Reactivate", flush=True)
-    agent = V17Engine()
+    print("🚀 V20.0 — Chart Priority + Rare Skip", flush=True)
+    agent = V20Engine()
 
-    # Telegram Command Thread
     threading.Thread(target=poll_telegram, args=(agent,), daemon=True).start()
 
     last_processed_period = None
@@ -1342,19 +1501,19 @@ def run_bot():
 @app.route('/')
 def home():
     if not global_agent:
-        return "<h3>🚀 V17.0 starting...</h3>"
+        return "<h3>🚀 V20.0 starting...</h3>"
     a = global_agent
     bet_amount, bet_type = a.get_current_bet()
     return f"""
-    <h2>🚀 V17.0 — Auto Reactivate + Advanced</h2>
+    <h2>🚀 V20.0 — Chart Priority + Rare Skip</h2>
     <p><b>🎯 Regime:</b> {a.current_regime}</p>
     <p><b>🤖 Bot Step:</b> {a.bot_step}x</p>
     <p><b>🎮 Level:</b> {a.level} | {a.level_state}</p>
     <p><b>💰 Bet:</b> {bet_amount:,} ({bet_type})</p>
     <p><b>💵 Profit:</b> {a.current_profit:+,.0f}</p>
     <p><b>📊 WR:</b> {a.get_wr():.1f}%</p>
-    <p><b>✅ Active Agents:</b> {len(a.meta_agent.active_agents)}</p>
-    <p><b>⏸️ Suspended:</b> {len(a.meta_agent.suspended_agents)}</p>
+    <p><b>🕯️ Candles:</b> {a.candle_db.get_count()}</p>
+    <p><b>✅ Active:</b> {len(a.meta_agent.active_agents)} | ⏸️ Suspended: {len(a.meta_agent.suspended_agents)}</p>
     """
 
 @app.route('/stats')
@@ -1362,9 +1521,8 @@ def stats():
     if global_agent:
         a = global_agent
         bet_amount, bet_type = a.get_current_bet()
-        today = a.analytics.get_today()
         return {
-            "version": "V17.0",
+            "version": "V20.0",
             "regime": a.current_regime,
             "bot_step": a.bot_step,
             "level": a.level,
@@ -1377,11 +1535,9 @@ def stats():
             "win_rate": f"{a.get_wr():.2f}%",
             "net_profit": round(a.current_profit, 2),
             "max_loss": round(a.max_loss_amount, 2),
+            "candles": a.candle_db.get_count(),
             "active_agents": len(a.meta_agent.active_agents),
             "suspended_agents": len(a.meta_agent.suspended_agents),
-            "today_wins": today["wins"],
-            "today_losses": today["losses"],
-            "today_profit": round(today["profit"], 2),
         }
     return {"status": "initializing"}
 
@@ -1402,7 +1558,7 @@ def agent_stats():
 
 @app.route('/health')
 def health():
-    return {"status": "ok", "version": "V17.0"}
+    return {"status": "ok", "version": "V20.0"}
 
 
 # ==========================================
