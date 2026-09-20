@@ -1,15 +1,15 @@
 """
-🚀 V20.6.1 PRODUCTION FIXED
+🚀 V20.6.2 PRODUCTION FIXED (FULL CODE)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Fixes Applied:
-  1. Cleaned all non-breaking spaces (\xa0) to valid ASCII spaces.
-  2. Fixed V20Engine.is_warmup reset bug after initial batch.
-  3. Fixed process_api_result return signature to always return a list.
-  4. Fixed HMM transition probability division and stability issues.
-  5. Handled BOCPD zero-division and distribution underflow gracefully.
-  6. Added SQLite timeout=10.0 to prevent database lock contention.
-  7. Thread-safe locks applied across Flask endpoints and Telegram poller.
-  8. Guarded zero-division cases in RunsTestAgent and SurvivalAnalyzer.
+All Fixes Integrated:
+  1. Duplicate Polling Fix: Fixed recurring period execution using `seen_periods` cache.
+  2. Syntax & Encoding: Removed all non-breaking spaces (\xa0).
+  3. Warm-up Flag: Reset correctly after initial batch processing.
+  4. Returns & Notifications: Ensured process_api_result returns safe list.
+  5. HMM Transition Fix: Vectorized transition matrix with safe division.
+  6. BOCPD Underflow Protection: Resets correctly on zero total probability.
+  7. SQLite Safety: Set 10.0s connection timeout and handled lock isolation.
+  8. Concurrency: Protected stats and telegram commands with thread locks.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
@@ -209,7 +209,7 @@ class FeatureEngineer:
 
 
 # ==========================================
-# ✅ BOCPD (Threshold 0.2)
+# ✅ BOCPD
 # ==========================================
 class BOCPD:
     def __init__(self, hazard_rate=1 / 25, max_rl=200, cp_threshold=0.2):
@@ -534,7 +534,7 @@ class StandardScaler:
 
 
 # ==========================================
-# ✅ HMM (Fixed Vectorized Transition)
+# ✅ HMM REGIME DETECTOR
 # ==========================================
 class HMMRegimeDetector:
     def __init__(self, n_states=4):
@@ -890,7 +890,7 @@ class AdversarialValidator:
 
 
 # ==========================================
-# 📊 CANDLE DB (With SQLite Timeout)
+# 📊 CANDLE DB
 # ==========================================
 class CandleDB:
     def __init__(self, db_path="candles.db", max_size=3000):
@@ -2206,14 +2206,15 @@ def poll_telegram(agent):
 
 
 # ==========================================
-# API POLLER
+# 🚀 API POLLER (Duplicate Fetching Fixed)
 # ==========================================
 def run_bot():
-    print("🚀 V20.6 FINAL — All 14 Bugs Fixed", flush=True)
+    print("🚀 V20.6 FINAL — Polling Duplicate Bug Fixed", flush=True)
     agent = V20Engine()
     threading.Thread(target=poll_telegram, args=(agent,), daemon=True).start()
 
-    last_processed_period = None
+    # Cache to prevent duplicate period updates
+    seen_periods = set()
     is_first_poll = True
     url = CONFIG['api_url']
     auth = LOTTERY_AUTH
@@ -2236,33 +2237,40 @@ def run_bot():
             }
             res = requests.post(url, headers=headers, json=payload, timeout=5)
             if res.status_code != 200:
-                time.sleep(1.5)
+                time.sleep(2)
                 continue
             data = res.json().get("data", {}).get("list", [])
             if not data:
-                time.sleep(1.5)
+                time.sleep(2)
                 continue
 
             sorted_data = sorted(data, key=lambda x: int(x.get("issueNumber", 0)))
 
             if is_first_poll:
-                print(f"🔥 Warm-up: {len(sorted_data)} periods", flush=True)
+                print(f"🔥 Warm-up: Loading initial {len(sorted_data)} periods", flush=True)
                 for item in sorted_data:
                     period = str(item.get("issueNumber"))
                     num = int(item.get("number"))
                     result = "Big" if num >= 5 else "Small"
+                    seen_periods.add(period)
                     agent.process_api_result(period, result, num, is_warmup=True)
-                last_processed_period = sorted_data[-1].get("issueNumber")
                 agent.is_warmup = False
                 is_first_poll = False
+                print("✅ Warm-up Completed!", flush=True)
             else:
                 for item in sorted_data:
                     period = str(item.get("issueNumber"))
                     num = int(item.get("number"))
                     result = "Big" if num >= 5 else "Small"
-                    if period != last_processed_period:
-                        last_processed_period = period
-                        print(f"📥 Period {period} → {result} ({num})", flush=True)
+
+                    # Process only if the period is new
+                    if period not in seen_periods:
+                        seen_periods.add(period)
+                        if len(seen_periods) > 1000:
+                            # Prune cache to avoid unbounded growth
+                            seen_periods.pop()
+
+                        print(f"📥 New Period {period} → {result} ({num})", flush=True)
                         notifications = agent.process_api_result(period, result, num)
                         if notifications:
                             for msg in notifications:
@@ -2270,11 +2278,11 @@ def run_bot():
                                 time.sleep(0.1)
         except Exception as e:
             print(f"Poll Error: {e}", flush=True)
-        time.sleep(1.2)
+        time.sleep(2.0)
 
 
 # ==========================================
-# 🌐 FLASK
+# 🌐 FLASK WEB ENDPOINTS
 # ==========================================
 @app.route('/')
 def home():
@@ -2308,7 +2316,7 @@ def stats():
         with a.lock:
             bet_amount, _ = a.get_current_bet()
             return {
-                "version": "V20.6.1 FIXED",
+                "version": "V20.6.2 FIXED",
                 "warmup": a.is_warmup,
                 "regime_hmm": a.current_regime,
                 "hmm_trained": a.hmm_detector.trained,
@@ -2339,13 +2347,13 @@ def stats():
 
 @app.route('/health')
 def health():
-    return {"status": "ok", "version": "V20.6.1 FIXED"}
+    return {"status": "ok", "version": "V20.6.2 FIXED"}
 
 
 # ==========================================
-# 🚀 ENTRY
+# 🚀 ENTRY POINT
 # ==========================================
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port) 
+    app.run(host="0.0.0.0", port=port)
