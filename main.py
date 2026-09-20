@@ -1,25 +1,17 @@
 """
-🚀 V16.2 — Multi-Agent Bot (10 Agents + Thompson Sampling)
+🚀 V17.0 — Multi-Agent Bot (Auto Reactivate + Advanced Features)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Agents (10):
-  1. TrendAgent
-  2. MeanReversionAgent
-  3. PatternAgent
-  4. BreakoutAgent
-  5. FibonacciAgent
-  6. MarkovAgent         🆕
-  7. KNNAgent            🆕
-  8. RunsTestAgent       🆕
-  9. DigitBiasAgent      🆕
-  10. EMARibbonAgent     🆕
-
 Features:
-  - Thompson Sampling (Dynamic Agent Selection)
-  - Min Agents = 2 (Quality Control)
-  - Regime Detection (Streak Priority)
-  - Conf No Cap
-  - Level State Machine
-  - Profit Reset
+  1. 10 Agents + Auto Suspend/Reactivate
+  2. Shadow Tracking (Suspended Agents Run in Background)
+  3. Multi-Timeframe Analysis (Short/Medium/Long)
+  4. Confidence Calibration
+  5. Agent Correlation Tracking
+  6. Performance Analytics
+  7. Advanced Adaptive Threshold
+  8. Telegram Commands
+  9. Level State Machine
+  10. Profit Reset
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
@@ -30,6 +22,7 @@ import threading
 import math
 import numpy as np
 from collections import deque, Counter
+from datetime import datetime
 from flask import Flask
 
 # ==========================================
@@ -49,17 +42,22 @@ COLOUR_MAP = {
 # ==========================================
 CONFIG = {
     "window_size": 60,
-    "min_data_before_signal": 20,
+    "min_data_before_signal": 25,
     "adaptive_base_threshold": 0.58,
     "min_margin": 0.12,
     "min_agents_for_signal": 2,
+    "min_agent_wr": 0.50,
+    "reactivate_wr": 0.55,
+    "suspend_wr": 0.45,
+    "min_sample": 30,
     "api_url": "https://6lotteryapi.com/api/webapi/GetNoaverageEmerdList",
     "payout_rate": 0.96,
     "profit_reset_threshold": 100000,
+    "max_level": 15,
 }
 
 # ==========================================
-# 📊 LEVEL TABLE
+# 📊 LEVEL TABLE (1-20)
 # ==========================================
 LEVEL_TABLE = {
     1:  {"bet1": 1000,    "bet2": 2000},
@@ -82,25 +80,16 @@ LEVEL_TABLE = {
     18: {"bet1": 151000,  "bet2": 302000},
     19: {"bet1": 203000,  "bet2": 406000},
     20: {"bet1": 274000,  "bet2": 548000},
-    21: {"bet1": 369000,  "bet2": 738000},
-    22: {"bet1": 497000,  "bet2": 994000},
-    23: {"bet1": 670000,  "bet2": 1340000},
-    24: {"bet1": 902000,  "bet2": 1804000},
-    25: {"bet1": 1216000, "bet2": 2432000},
-    26: {"bet1": 1638000, "bet2": 3276000},
-    27: {"bet1": 2207000, "bet2": 4414000},
-    28: {"bet1": 2973000, "bet2": 5946000},
-    29: {"bet1": 4005000, "bet2": 8010000},
-    30: {"bet1": 5396000, "bet2": 10792000},
 }
 
 
 def get_level_bet(level):
+    """Level ရဲ့ Bet Size"""
     if level in LEVEL_TABLE:
         return LEVEL_TABLE[level]
-    a = LEVEL_TABLE[29]["bet1"]
-    b = LEVEL_TABLE[30]["bet1"]
-    for _ in range(level - 30):
+    a = LEVEL_TABLE[19]["bet1"]
+    b = LEVEL_TABLE[20]["bet1"]
+    for _ in range(level - 20):
         a, b = b, a + b
     return {"bet1": b, "bet2": b * 2}
 
@@ -116,15 +105,19 @@ def calculate_dfa(series, min_scale=6, max_scale=None):
     try:
         data = np.asarray(series, dtype=np.float64)
         N = len(data)
-        if N < 16: return 0.5
-        if max_scale is None: max_scale = N // 3
-        if max_scale <= min_scale: return 0.5
+        if N < 16:
+            return 0.5
+        if max_scale is None:
+            max_scale = N // 3
+        if max_scale <= min_scale:
+            return 0.5
         y = np.cumsum(data - np.mean(data))
         scales = np.unique(np.logspace(np.log10(min_scale), np.log10(max_scale), num=6).astype(int))
         fluctuations, valid_scales = [], []
         for s in scales:
             num_segments = N // s
-            if num_segments < 2: continue
+            if num_segments < 2:
+                continue
             segment_rms = []
             x_axis = np.arange(s)
             for i in range(num_segments):
@@ -137,11 +130,11 @@ def calculate_dfa(series, min_scale=6, max_scale=None):
                 if f_s > 1e-6:
                     fluctuations.append(f_s)
                     valid_scales.append(s)
-        if len(valid_scales) < 2: return 0.5
+        if len(valid_scales) < 2:
+            return 0.5
         alpha, _ = np.polyfit(np.log(valid_scales), np.log(fluctuations), 1)
         return float(np.clip(alpha, 0.1, 1.4))
-    except Exception as e:
-        print(f"DFA Error: {e}", flush=True)
+    except Exception:
         return 0.5
 
 
@@ -157,8 +150,10 @@ class FeatureEngineer:
         if not encoded: return 0
         count = 1
         for i in range(len(encoded) - 2, -1, -1):
-            if encoded[i] == encoded[-1]: count += 1
-            else: break
+            if encoded[i] == encoded[-1]:
+                count += 1
+            else:
+                break
         return count
 
     @staticmethod
@@ -166,14 +161,11 @@ class FeatureEngineer:
         if len(encoded) < 2: return 0
         count = 1
         for i in range(len(encoded) - 2, -1, -1):
-            if encoded[i] != encoded[i + 1]: count += 1
-            else: break
+            if encoded[i] != encoded[i + 1]:
+                count += 1
+            else:
+                break
         return count
-
-    @staticmethod
-    def momentum(encoded, window):
-        if len(encoded) < window: return 0.5
-        return sum(encoded[-window:]) / window
 
     @staticmethod
     def entropy(encoded, window=20):
@@ -198,40 +190,7 @@ class FeatureEngineer:
 
 
 # ==========================================
-# 🎯 AGENT 1: TREND AGENT
-# ==========================================
-class TrendAgent:
-    NAME = "trend"
-
-    def predict(self, encoded, window):
-        try:
-            if len(encoded) < 15:
-                return None, 0
-
-            streak = FeatureEngineer.streak(encoded)
-            if streak >= 3:
-                pred = encoded[-1]
-                conf = 0.62 + min(streak * 0.03, 0.18)
-                return ("Big" if pred == 1 else "Small"), min(conf, 0.82)
-
-            ma_short = sum(encoded[-10:]) / 10
-            ma_long = sum(encoded[-30:]) / 30 if len(encoded) >= 30 else sum(encoded) / len(encoded)
-            trend_strength = abs(ma_short - ma_long)
-            alpha = calculate_dfa(encoded)
-
-            if trend_strength > 0.12 and alpha > 0.50:
-                pred = 1 if encoded[-1] == 1 else 0
-                conf = 0.58 + min(trend_strength * 0.5, 0.15)
-                return ("Big" if pred == 1 else "Small"), min(conf, 0.78)
-
-            return None, 0
-        except Exception as e:
-            print(f"TrendAgent Error: {e}", flush=True)
-            return None, 0
-
-
-# ==========================================
-# 🎯 AGENT 2: MEAN REVERSION AGENT
+# 🎯 AGENT 1: MEAN REVERSION
 # ==========================================
 class MeanReversionAgent:
     NAME = "mean_rev"
@@ -240,127 +199,25 @@ class MeanReversionAgent:
         try:
             if len(encoded) < 15:
                 return None, 0
-
             short_mom = sum(encoded[-5:]) / 5
             long_ma = sum(encoded[-20:]) / 20 if len(encoded) >= 20 else sum(encoded) / len(encoded)
             deviation = short_mom - long_ma
             alpha = calculate_dfa(encoded)
-
             if 0.42 <= alpha <= 0.58:
                 if deviation > 0.25:
                     return "Small", 0.58 + min(deviation * 0.3, 0.12)
                 elif deviation < -0.25:
                     return "Big", 0.58 + min(abs(deviation) * 0.3, 0.12)
-
             if abs(deviation) > 0.35:
                 pred = 0 if deviation > 0 else 1
                 return ("Big" if pred == 1 else "Small"), 0.60
-
             return None, 0
-        except Exception as e:
-            print(f"MeanRevAgent Error: {e}", flush=True)
+        except Exception:
             return None, 0
 
 
 # ==========================================
-# 🎯 AGENT 3: PATTERN AGENT
-# ==========================================
-class PatternAgent:
-    NAME = "pattern"
-
-    def predict(self, encoded, window):
-        try:
-            if len(encoded) < 8:
-                return None, 0
-
-            alt_streak = FeatureEngineer.alternating_streak(encoded)
-            if alt_streak >= 3:
-                pred = 1 - encoded[-1]
-                conf = 0.58 + min((alt_streak - 3) * 0.03, 0.15)
-                return ("Big" if pred == 1 else "Small"), conf
-
-            streak = FeatureEngineer.streak(encoded)
-            if streak >= 5:
-                pred = 1 - encoded[-1]
-                return ("Big" if pred == 1 else "Small"), 0.68
-            elif streak >= 4:
-                pred = encoded[-1]
-                return ("Big" if pred == 1 else "Small"), 0.62
-
-            return None, 0
-        except Exception as e:
-            print(f"PatternAgent Error: {e}", flush=True)
-            return None, 0
-
-
-# ==========================================
-# 🎯 AGENT 4: BREAKOUT AGENT
-# ==========================================
-class BreakoutAgent:
-    NAME = "breakout"
-
-    def predict(self, encoded, window):
-        try:
-            if len(encoded) < 8:
-                return None, 0
-
-            recent_5 = encoded[-5:]
-            recent_std = FeatureEngineer.std(recent_5)
-
-            short_mom = sum(encoded[-3:]) / 3
-            prev_mom = sum(encoded[-6:-3]) / 3 if len(encoded) >= 6 else 0.5
-            accel = short_mom - prev_mom
-
-            if abs(accel) > 0.30:
-                pred = 1 if accel > 0 else 0
-                conf = 0.56 + min(abs(accel) * 0.3, 0.15)
-                return ("Big" if pred == 1 else "Small"), conf
-
-            if recent_std > 0.45:
-                pred = 1 - encoded[-1]
-                return ("Big" if pred == 1 else "Small"), 0.55
-
-            return None, 0
-        except Exception as e:
-            print(f"BreakoutAgent Error: {e}", flush=True)
-            return None, 0
-
-
-# ==========================================
-# 🎯 AGENT 5: FIBONACCI AGENT
-# ==========================================
-class FibonacciAgent:
-    NAME = "fibonacci"
-
-    def predict(self, encoded, window):
-        try:
-            if len(encoded) < 15:
-                return None, 0
-
-            fibs = [3, 5, 8, 13]
-            votes = {0: 0.0, 1: 0.0}
-
-            for fib in fibs:
-                if len(encoded) < fib + 1:
-                    continue
-                if encoded[-1] == encoded[-(fib + 1)]:
-                    if fib > 1 and len(encoded) >= fib:
-                        votes[encoded[-(fib - 1)]] += 1.0 / fib
-
-            total = votes[0] + votes[1]
-            if total < 0.3:
-                return None, 0
-
-            pred = 1 if votes[1] > votes[0] else 0
-            conf = max(votes.values()) / total
-            return ("Big" if pred == 1 else "Small"), min(0.55 + conf * 0.25, 0.75)
-        except Exception as e:
-            print(f"FibonacciAgent Error: {e}", flush=True)
-            return None, 0
-
-
-# ==========================================
-# 🆕 AGENT 6: MARKOV AGENT
+# 🎯 AGENT 2: MARKOV
 # ==========================================
 class MarkovAgent:
     NAME = "markov"
@@ -369,18 +226,15 @@ class MarkovAgent:
         try:
             if len(encoded) < 10:
                 return ("Big" if encoded[-1] == 1 else "Small"), 0.52
-
             order = 2
             history = list(encoded)
             transitions = {}
-
             for i in range(len(history) - order):
                 state = tuple(history[i:i + order])
                 next_val = history[i + order]
                 if state not in transitions:
                     transitions[state] = [0, 0]
                 transitions[state][next_val] += 1
-
             curr_state = tuple(history[-order:])
             if curr_state in transitions:
                 zeros, ones = transitions[curr_state]
@@ -391,15 +245,13 @@ class MarkovAgent:
                         return "Big", min(0.50 + (p_one - 0.5) * 0.4, 0.78)
                     else:
                         return "Small", min(0.50 + (0.5 - p_one) * 0.4, 0.78)
-
             return ("Big" if history[-1] == 1 else "Small"), 0.51
-        except Exception as e:
-            print(f"MarkovAgent Error: {e}", flush=True)
+        except Exception:
             return None, 0
 
 
 # ==========================================
-# 🆕 AGENT 7: KNN AGENT
+# 🎯 AGENT 3: KNN
 # ==========================================
 class KNNAgent:
     NAME = "knn"
@@ -408,32 +260,26 @@ class KNNAgent:
         try:
             if len(encoded) < 25:
                 return ("Big" if encoded[-1] == 1 else "Small"), 0.51
-
             target_pattern = list(encoded[-k:])
             matches = []
-
             for i in range(len(encoded) - k - 1):
-                window_slice = list(encoded[i : i + k])
+                window_slice = list(encoded[i:i + k])
                 if window_slice == target_pattern:
                     matches.append(encoded[i + k])
-
             if not matches:
                 return ("Big" if encoded[-1] == 1 else "Small"), 0.51
-
             big_count = sum(matches)
             small_count = len(matches) - big_count
-
             if big_count >= small_count:
                 return "Big", min(0.50 + (big_count / len(matches)) * 0.25, 0.75)
             else:
                 return "Small", min(0.50 + (small_count / len(matches)) * 0.25, 0.75)
-        except Exception as e:
-            print(f"KNNAgent Error: {e}", flush=True)
+        except Exception:
             return None, 0
 
 
 # ==========================================
-# 🆕 AGENT 8: RUNS TEST AGENT
+# 🎯 AGENT 4: RUNS TEST
 # ==========================================
 class RunsTestAgent:
     NAME = "runs_test"
@@ -442,37 +288,139 @@ class RunsTestAgent:
         try:
             if len(encoded) < 16:
                 return ("Big" if encoded[-1] == 1 else "Small"), 0.51
-
             seq = list(encoded[-24:])
             n1 = sum(seq)
             n2 = len(seq) - n1
-
             if n1 == 0 or n2 == 0:
                 return ("Big" if encoded[-1] == 1 else "Small"), 0.55
-
             runs = 1 + sum(1 for i in range(len(seq) - 1) if seq[i] != seq[i + 1])
             mu = (2 * n1 * n2) / (n1 + n2) + 1
             variance = (2 * n1 * n2 * (2 * n1 * n2 - n1 - n2)) / (((n1 + n2) ** 2) * (n1 + n2 - 1))
-
             if variance <= 0:
                 return ("Big" if encoded[-1] == 1 else "Small"), 0.51
-
             z = (runs - mu) / math.sqrt(variance)
             last_val = encoded[-1]
-
             if z < -1.0:
                 return ("Big" if last_val == 1 else "Small"), 0.58
             elif z > 1.0:
                 return ("Small" if last_val == 1 else "Big"), 0.58
-
             return ("Big" if last_val == 1 else "Small"), 0.51
-        except Exception as e:
-            print(f"RunsTestAgent Error: {e}", flush=True)
+        except Exception:
             return None, 0
 
 
 # ==========================================
-# 🆕 AGENT 9: DIGIT BIAS AGENT
+# 🎯 AGENT 5: FIBONACCI
+# ==========================================
+class FibonacciAgent:
+    NAME = "fibonacci"
+
+    def predict(self, encoded, window):
+        try:
+            if len(encoded) < 15:
+                return None, 0
+            fibs = [3, 5, 8, 13]
+            votes = {0: 0.0, 1: 0.0}
+            for fib in fibs:
+                if len(encoded) < fib + 1:
+                    continue
+                if encoded[-1] == encoded[-(fib + 1)]:
+                    if fib > 1 and len(encoded) >= fib:
+                        votes[encoded[-(fib - 1)]] += 1.0 / fib
+            total = votes[0] + votes[1]
+            if total < 0.3:
+                return None, 0
+            pred = 1 if votes[1] > votes[0] else 0
+            conf = max(votes.values()) / total
+            return ("Big" if pred == 1 else "Small"), min(0.55 + conf * 0.25, 0.75)
+        except Exception:
+            return None, 0
+
+
+# ==========================================
+# 🎯 AGENT 6: PATTERN
+# ==========================================
+class PatternAgent:
+    NAME = "pattern"
+
+    def predict(self, encoded, window):
+        try:
+            if len(encoded) < 8:
+                return None, 0
+            alt_streak = FeatureEngineer.alternating_streak(encoded)
+            if alt_streak >= 3:
+                pred = 1 - encoded[-1]
+                conf = 0.58 + min((alt_streak - 3) * 0.03, 0.15)
+                return ("Big" if pred == 1 else "Small"), conf
+            streak = FeatureEngineer.streak(encoded)
+            if streak >= 5:
+                pred = 1 - encoded[-1]
+                return ("Big" if pred == 1 else "Small"), 0.68
+            elif streak >= 4:
+                pred = encoded[-1]
+                return ("Big" if pred == 1 else "Small"), 0.62
+            return None, 0
+        except Exception:
+            return None, 0
+
+
+# ==========================================
+# 🎯 AGENT 7: BREAKOUT
+# ==========================================
+class BreakoutAgent:
+    NAME = "breakout"
+
+    def predict(self, encoded, window):
+        try:
+            if len(encoded) < 8:
+                return None, 0
+            recent_5 = encoded[-5:]
+            recent_std = FeatureEngineer.std(recent_5)
+            short_mom = sum(encoded[-3:]) / 3
+            prev_mom = sum(encoded[-6:-3]) / 3 if len(encoded) >= 6 else 0.5
+            accel = short_mom - prev_mom
+            if abs(accel) > 0.25:
+                pred = 1 if accel > 0 else 0
+                conf = 0.56 + min(abs(accel) * 0.3, 0.15)
+                return ("Big" if pred == 1 else "Small"), conf
+            if recent_std > 0.48:
+                pred = 1 - encoded[-1]
+                return ("Big" if pred == 1 else "Small"), 0.55
+            return None, 0
+        except Exception:
+            return None, 0
+
+
+# ==========================================
+# 🎯 AGENT 8: TREND
+# ==========================================
+class TrendAgent:
+    NAME = "trend"
+
+    def predict(self, encoded, window):
+        try:
+            if len(encoded) < 15:
+                return None, 0
+            streak = FeatureEngineer.streak(encoded)
+            if streak >= 3:
+                pred = encoded[-1]
+                conf = 0.62 + min(streak * 0.03, 0.18)
+                return ("Big" if pred == 1 else "Small"), min(conf, 0.82)
+            ma_short = sum(encoded[-10:]) / 10
+            ma_long = sum(encoded[-30:]) / 30 if len(encoded) >= 30 else sum(encoded) / len(encoded)
+            trend_strength = abs(ma_short - ma_long)
+            alpha = calculate_dfa(encoded)
+            if trend_strength > 0.15 and alpha > 0.52:
+                pred = 1 if encoded[-1] == 1 else 0
+                conf = 0.58 + min(trend_strength * 0.5, 0.15)
+                return ("Big" if pred == 1 else "Small"), min(conf, 0.78)
+            return None, 0
+        except Exception:
+            return None, 0
+
+
+# ==========================================
+# 🎯 AGENT 9: DIGIT BIAS
 # ==========================================
 class DigitBiasAgent:
     NAME = "digit_bias"
@@ -481,24 +429,20 @@ class DigitBiasAgent:
         try:
             if len(digit_history) < 15:
                 return None, 0
-
             recent_digits = list(digit_history)[-10:]
             avg_val = sum(recent_digits) / len(recent_digits)
-
             if avg_val > 5.5:
                 return "Small", min(0.55 + (avg_val - 4.5) * 0.05, 0.70)
             elif avg_val < 3.5:
                 return "Big", min(0.55 + (4.5 - avg_val) * 0.05, 0.70)
-
             last_d = digit_history[-1]
             return ("Big" if last_d >= 5 else "Small"), 0.52
-        except Exception as e:
-            print(f"DigitBiasAgent Error: {e}", flush=True)
+        except Exception:
             return None, 0
 
 
 # ==========================================
-# 🆕 AGENT 10: EMA RIBBON AGENT
+# 🎯 AGENT 10: EMA RIBBON
 # ==========================================
 class EMARibbonAgent:
     NAME = "ema_ribbon"
@@ -514,21 +458,58 @@ class EMARibbonAgent:
         try:
             if len(encoded) < 15:
                 return ("Big" if encoded[-1] == 1 else "Small"), 0.51
-
             ema_fast = self._calc_ema(encoded[-5:], 3)
             ema_mid = self._calc_ema(encoded[-10:], 8)
             ema_slow = self._calc_ema(encoded[-15:], 15)
-
             if ema_fast > ema_mid > ema_slow:
                 conf = 0.55 + min((ema_fast - 0.5) * 0.3, 0.20)
                 return "Big", conf
             elif ema_fast < ema_mid < ema_slow:
                 conf = 0.55 + min((0.5 - ema_fast) * 0.3, 0.20)
                 return "Small", conf
-
             return ("Big" if ema_fast >= 0.5 else "Small"), 0.52
-        except Exception as e:
-            print(f"EMARibbonAgent Error: {e}", flush=True)
+        except Exception:
+            return None, 0
+
+
+# ==========================================
+# 🎯 AGENT 11: MULTI-TIMEFRAME
+# ==========================================
+class MultiTimeframeAgent:
+    NAME = "multi_tf"
+
+    def _predict_tf(self, data):
+        if len(data) < 5:
+            return None
+        big_ratio = sum(data) / len(data)
+        if big_ratio > 0.60:
+            return "Big"
+        elif big_ratio < 0.40:
+            return "Small"
+        return None
+
+    def predict(self, encoded, window):
+        try:
+            if len(encoded) < 20:
+                return None, 0
+            short = self._predict_tf(encoded[-10:])
+            med = self._predict_tf(encoded[-30:]) if len(encoded) >= 30 else None
+            long = self._predict_tf(encoded[-60:]) if len(encoded) >= 60 else None
+            votes = [v for v in [short, med, long] if v]
+            if len(votes) < 2:
+                return None, 0
+            big_count = sum(1 for v in votes if v == "Big")
+            small_count = len(votes) - big_count
+            if big_count == 3:
+                return "Big", 0.75
+            elif small_count == 3:
+                return "Small", 0.75
+            elif big_count == 2:
+                return "Big", 0.60
+            elif small_count == 2:
+                return "Small", 0.60
+            return None, 0
+        except Exception:
             return None, 0
 
 
@@ -540,11 +521,9 @@ class MarketDetector:
         try:
             if len(encoded) < 15:
                 return "unknown", 0.5
-
             streak = FeatureEngineer.streak(encoded)
             if streak >= 4:
                 return "trending", 0.65
-
             alpha = calculate_dfa(encoded)
             entropy = FeatureEngineer.entropy(encoded, 20)
             flip_rate = FeatureEngineer.flip_rate(encoded[-20:])
@@ -552,79 +531,207 @@ class MarketDetector:
             long_mom = sum(encoded[-20:]) / 20 if len(encoded) >= 20 else 0.5
             momentum_shift = short_mom - long_mom
             std = FeatureEngineer.std(encoded[-10:])
-
             if alpha > 0.55 and abs(momentum_shift) > 0.22:
                 return "trending", alpha
-
             if entropy > 0.90 and flip_rate > 0.60:
                 return "choppy", entropy
-
             if alpha < 0.48 and abs(momentum_shift) < 0.18:
                 return "sideway", 1 - alpha
-
             if std > 0.52:
                 return "volatile", std
-
             return "neutral", 0.5
-        except Exception as e:
-            print(f"MarketDetector Error: {e}", flush=True)
+        except Exception:
             return "unknown", 0.5
 
 
 # ==========================================
-# 🎯 META-AGENT (10 Agents + Thompson)
+# 📊 CONFIDENCE CALIBRATOR
+# ==========================================
+class ConfidenceCalibrator:
+    def __init__(self):
+        self.buckets = {
+            "50-55": {"wins": 0, "total": 0},
+            "55-60": {"wins": 0, "total": 0},
+            "60-65": {"wins": 0, "total": 0},
+            "65-70": {"wins": 0, "total": 0},
+            "70-80": {"wins": 0, "total": 0},
+            "80+": {"wins": 0, "total": 0},
+        }
+
+    def get_bucket(self, conf):
+        if conf < 0.55: return "50-55"
+        elif conf < 0.60: return "55-60"
+        elif conf < 0.65: return "60-65"
+        elif conf < 0.70: return "65-70"
+        elif conf < 0.80: return "70-80"
+        else: return "80+"
+
+    def record(self, conf, won):
+        try:
+            bucket = self.get_bucket(conf)
+            self.buckets[bucket]["total"] += 1
+            if won:
+                self.buckets[bucket]["wins"] += 1
+        except Exception:
+            pass
+
+    def calibrate(self, conf):
+        try:
+            bucket = self.get_bucket(conf)
+            data = self.buckets[bucket]
+            if data["total"] >= 20:
+                return data["wins"] / data["total"]
+            return conf
+        except Exception:
+            return conf
+
+
+# ==========================================
+# 📊 PERFORMANCE ANALYTICS
+# ==========================================
+class PerformanceAnalytics:
+    def __init__(self):
+        self.daily_stats = {}
+        self.recent_rounds = deque(maxlen=100)
+
+    def record(self, won, profit):
+        try:
+            date_key = datetime.now().strftime("%Y-%m-%d")
+            if date_key not in self.daily_stats:
+                self.daily_stats[date_key] = {"wins": 0, "losses": 0, "profit": 0.0}
+            if won:
+                self.daily_stats[date_key]["wins"] += 1
+            else:
+                self.daily_stats[date_key]["losses"] += 1
+            self.daily_stats[date_key]["profit"] += profit
+
+            self.recent_rounds.append({"won": won, "profit": profit, "time": datetime.now()})
+        except Exception:
+            pass
+
+    def get_today(self):
+        try:
+            date_key = datetime.now().strftime("%Y-%m-%d")
+            return self.daily_stats.get(date_key, {"wins": 0, "losses": 0, "profit": 0.0})
+        except Exception:
+            return {"wins": 0, "losses": 0, "profit": 0.0}
+
+
+# ==========================================
+# 🎯 META-AGENT (10 Agents + Auto Reactivate)
 # ==========================================
 class MetaAgent:
     def __init__(self):
-        # 10 Agents
-        self.trend_agent = TrendAgent()
-        self.mean_rev_agent = MeanReversionAgent()
-        self.pattern_agent = PatternAgent()
-        self.breakout_agent = BreakoutAgent()
-        self.fib_agent = FibonacciAgent()
-        self.markov_agent = MarkovAgent()
-        self.knn_agent = KNNAgent()
-        self.runs_agent = RunsTestAgent()
-        self.digit_agent = DigitBiasAgent()
-        self.ema_agent = EMARibbonAgent()
-
-        # Thompson Sampling Stats (alpha, beta)
-        self.thompson_stats = {
-            "trend": {"a": 2, "b": 2},
-            "mean_rev": {"a": 2, "b": 2},
-            "pattern": {"a": 2, "b": 2},
-            "breakout": {"a": 2, "b": 2},
-            "fibonacci": {"a": 2, "b": 2},
-            "markov": {"a": 2, "b": 2},
-            "knn": {"a": 2, "b": 2},
-            "runs_test": {"a": 2, "b": 2},
-            "digit_bias": {"a": 2, "b": 2},
-            "ema_ribbon": {"a": 2, "b": 2},
+        # 10 Agents — All Always Run
+        self.all_agents = {
+            "mean_rev": MeanReversionAgent(),
+            "markov": MarkovAgent(),
+            "knn": KNNAgent(),
+            "runs_test": RunsTestAgent(),
+            "fibonacci": FibonacciAgent(),
+            "pattern": PatternAgent(),
+            "breakout": BreakoutAgent(),
+            "trend": TrendAgent(),
+            "digit_bias": DigitBiasAgent(),
+            "ema_ribbon": EMARibbonAgent(),
         }
 
-        # Accuracy tracking
+        # Multi-Timeframe Agent (New)
+        self.multi_tf = MultiTimeframeAgent()
+
+        # Active Agents (Bet ထိုးတာ)
+        self.active_agents = [
+            "mean_rev", "markov", "knn", "runs_test",
+            "fibonacci", "pattern", "multi_tf"
+        ]
+
+        # Suspended Agents
+        self.suspended_agents = [
+            "breakout", "trend", "digit_bias", "ema_ribbon"
+        ]
+
+        # Thompson Sampling
+        self.thompson_stats = {k: {"a": 2, "b": 2} for k in self.all_agents.keys()}
+        self.thompson_stats["multi_tf"] = {"a": 2, "b": 2}
+
+        # Accuracy Tracking
         self.agent_acc = {k: deque(maxlen=50) for k in self.thompson_stats}
         self.pending_agents = {}
 
+    def get_agent_wr(self, name):
+        try:
+            if len(self.agent_acc[name]) >= 20:
+                return sum(self.agent_acc[name]) / len(self.agent_acc[name])
+            return 0.50
+        except Exception:
+            return 0.50
+
     def get_active_agents(self, regime):
-        """Regime-based Agent Selection"""
-        if regime == "trending":
-            return ["trend", "breakout", "fibonacci", "pattern", "markov", "ema_ribbon"]
-        elif regime == "sideway":
-            return ["mean_rev", "pattern", "fibonacci", "trend", "knn", "digit_bias"]
-        elif regime == "choppy":
-            return ["pattern", "fibonacci", "mean_rev", "breakout", "markov", "knn"]
-        elif regime == "volatile":
-            return ["breakout", "trend", "fibonacci", "pattern", "runs_test", "ema_ribbon"]
-        else:  # neutral
-            return ["trend", "mean_rev", "pattern", "breakout", "fibonacci",
-                    "markov", "knn", "runs_test", "digit_bias", "ema_ribbon"]
+        """Regime + WR Filter + Active List"""
+        try:
+            base = {
+                "trending": ["mean_rev", "markov", "knn", "multi_tf", "fibonacci", "trend", "ema_ribbon"],
+                "sideway": ["mean_rev", "pattern", "fibonacci", "knn", "markov", "multi_tf"],
+                "choppy": ["pattern", "fibonacci", "mean_rev", "markov", "knn", "multi_tf"],
+                "volatile": ["markov", "knn", "mean_rev", "fibonacci", "runs_test", "breakout", "multi_tf"],
+                "neutral": ["mean_rev", "markov", "knn", "runs_test", "fibonacci", "pattern", "multi_tf"],
+                "unknown": ["mean_rev", "markov", "knn", "runs_test", "fibonacci", "pattern", "multi_tf"],
+            }
+            candidates = base.get(regime, base["neutral"])
+
+            # Filter by Active List + WR
+            filtered = []
+            for name in candidates:
+                if name in self.active_agents:
+                    wr = self.get_agent_wr(name)
+                    if wr >= CONFIG['min_agent_wr'] or len(self.agent_acc[name]) < CONFIG['min_sample']:
+                        filtered.append(name)
+
+            return filtered if filtered else candidates[:3]
+        except Exception:
+            return ["mean_rev", "markov", "knn"]
+
+    def check_reactivation(self):
+        """Suspended Agent — WR ကောင်းလား စစ်"""
+        try:
+            reactivated = []
+            for name in self.suspended_agents[:]:
+                if len(self.agent_acc[name]) >= CONFIG['min_sample']:
+                    wr = sum(self.agent_acc[name]) / len(self.agent_acc[name])
+                    if wr >= CONFIG['reactivate_wr']:
+                        self.suspended_agents.remove(name)
+                        self.active_agents.append(name)
+                        reactivated.append((name, wr))
+            return reactivated
+        except Exception:
+            return []
+
+    def check_suspension(self):
+        """Active Agent — WR ကျလား စစ်"""
+        try:
+            suspended = []
+            for name in self.active_agents[:]:
+                if name == "multi_tf":
+                    continue  # Multi-TF — Suspend မလုပ်
+                if len(self.agent_acc[name]) >= CONFIG['min_sample']:
+                    wr = sum(self.agent_acc[name]) / len(self.agent_acc[name])
+                    if wr < CONFIG['suspend_wr']:
+                        self.active_agents.remove(name)
+                        self.suspended_agents.append(name)
+                        suspended.append((name, wr))
+            return suspended
+        except Exception:
+            return []
 
     def get_thompson_weight(self, name):
-        """Thompson Sampling Weight"""
         try:
             stats = self.thompson_stats.get(name, {"a": 2, "b": 2})
-            return float(np.random.beta(stats["a"], stats["b"]))
+            thompson = float(np.random.beta(stats["a"], stats["b"]))
+            if len(self.agent_acc[name]) >= 20:
+                acc = sum(self.agent_acc[name]) / len(self.agent_acc[name])
+                acc_weight = acc ** 2
+                return thompson * acc_weight * 3
+            return thompson
         except Exception:
             return 1.0
 
@@ -634,16 +741,17 @@ class MetaAgent:
             signals = {}
 
             agents_map = {
-                "trend": lambda: self.trend_agent.predict(encoded, window),
-                "mean_rev": lambda: self.mean_rev_agent.predict(encoded, window),
-                "pattern": lambda: self.pattern_agent.predict(encoded, window),
-                "breakout": lambda: self.breakout_agent.predict(encoded, window),
-                "fibonacci": lambda: self.fib_agent.predict(encoded, window),
-                "markov": lambda: self.markov_agent.predict(encoded, window),
-                "knn": lambda: self.knn_agent.predict(encoded, window),
-                "runs_test": lambda: self.runs_agent.predict(encoded, window),
-                "digit_bias": lambda: self.digit_agent.predict(digit_history),
-                "ema_ribbon": lambda: self.ema_agent.predict(encoded, window),
+                "mean_rev": lambda: self.all_agents["mean_rev"].predict(encoded, window),
+                "markov": lambda: self.all_agents["markov"].predict(encoded, window),
+                "knn": lambda: self.all_agents["knn"].predict(encoded, window),
+                "runs_test": lambda: self.all_agents["runs_test"].predict(encoded, window),
+                "fibonacci": lambda: self.all_agents["fibonacci"].predict(encoded, window),
+                "pattern": lambda: self.all_agents["pattern"].predict(encoded, window),
+                "breakout": lambda: self.all_agents["breakout"].predict(encoded, window),
+                "trend": lambda: self.all_agents["trend"].predict(encoded, window),
+                "digit_bias": lambda: self.all_agents["digit_bias"].predict(digit_history),
+                "ema_ribbon": lambda: self.all_agents["ema_ribbon"].predict(encoded, window),
+                "multi_tf": lambda: self.multi_tf.predict(encoded, window),
             }
 
             for name in active:
@@ -654,26 +762,16 @@ class MetaAgent:
                 except Exception as e:
                     print(f"Agent {name} Error: {e}", flush=True)
 
-            # Min Agents Check
             if len(signals) < CONFIG['min_agents_for_signal']:
                 return None, 0, f"Agents {len(signals)}/{len(active)}", regime
 
-            # Weighted Voting with Thompson Sampling
+            # Weighted Voting
             big_score = 0.0
             small_score = 0.0
 
             for name, (pred, conf) in signals.items():
-                # Thompson weight + accuracy weight
-                thompson_w = self.get_thompson_weight(name)
-
-                acc_w = 1.0
-                if len(self.agent_acc[name]) >= 10:
-                    acc = sum(self.agent_acc[name]) / len(self.agent_acc[name])
-                    acc_w = 0.5 + acc * 1.5
-
-                weight = thompson_w * acc_w
+                weight = self.get_thompson_weight(name)
                 weighted = conf * weight
-
                 if pred == "Big":
                     big_score += weighted
                 else:
@@ -694,7 +792,6 @@ class MetaAgent:
                 return "Big", confidence, f"🎯 Agent[{len(signals)}] {regime}", regime
             else:
                 return "Small", confidence, f"🎯 Agent[{len(signals)}] {regime}", regime
-
         except Exception as e:
             print(f"MetaAgent Error: {e}", flush=True)
             return None, 0, "Error", regime
@@ -705,37 +802,35 @@ class MetaAgent:
                 is_correct = 1 if pred == actual else 0
                 if name in self.agent_acc:
                     self.agent_acc[name].append(is_correct)
-
-                # Thompson update
                 if name in self.thompson_stats:
                     if is_correct:
                         self.thompson_stats[name]["a"] += 1
                     else:
                         self.thompson_stats[name]["b"] += 1
-
             self.pending_agents.clear()
         except Exception as e:
             print(f"update_accuracy Error: {e}", flush=True)
 
     def record_pending(self, encoded, window, regime, digit_history):
+        """Shadow Track — All Agents (Active + Suspended)"""
         try:
-            active = self.get_active_agents(regime)
-
+            all_names = list(self.all_agents.keys()) + ["multi_tf"]
             agents_map = {
-                "trend": lambda: self.trend_agent.predict(encoded, window),
-                "mean_rev": lambda: self.mean_rev_agent.predict(encoded, window),
-                "pattern": lambda: self.pattern_agent.predict(encoded, window),
-                "breakout": lambda: self.breakout_agent.predict(encoded, window),
-                "fibonacci": lambda: self.fib_agent.predict(encoded, window),
-                "markov": lambda: self.markov_agent.predict(encoded, window),
-                "knn": lambda: self.knn_agent.predict(encoded, window),
-                "runs_test": lambda: self.runs_agent.predict(encoded, window),
-                "digit_bias": lambda: self.digit_agent.predict(digit_history),
-                "ema_ribbon": lambda: self.ema_agent.predict(encoded, window),
+                "mean_rev": lambda: self.all_agents["mean_rev"].predict(encoded, window),
+                "markov": lambda: self.all_agents["markov"].predict(encoded, window),
+                "knn": lambda: self.all_agents["knn"].predict(encoded, window),
+                "runs_test": lambda: self.all_agents["runs_test"].predict(encoded, window),
+                "fibonacci": lambda: self.all_agents["fibonacci"].predict(encoded, window),
+                "pattern": lambda: self.all_agents["pattern"].predict(encoded, window),
+                "breakout": lambda: self.all_agents["breakout"].predict(encoded, window),
+                "trend": lambda: self.all_agents["trend"].predict(encoded, window),
+                "digit_bias": lambda: self.all_agents["digit_bias"].predict(digit_history),
+                "ema_ribbon": lambda: self.all_agents["ema_ribbon"].predict(encoded, window),
+                "multi_tf": lambda: self.multi_tf.predict(encoded, window),
             }
 
             self.pending_agents = {}
-            for name in active:
+            for name in all_names:
                 try:
                     result = agents_map[name]()
                     if result and result[0]:
@@ -747,9 +842,9 @@ class MetaAgent:
 
 
 # ==========================================
-# 🎯 V16.2 ENGINE
+# 🎯 V17.0 ENGINE
 # ==========================================
-class V16Engine:
+class V17Engine:
     def __init__(self):
         global global_agent
         global_agent = self
@@ -764,6 +859,8 @@ class V16Engine:
 
         self.market_detector = MarketDetector()
         self.meta_agent = MetaAgent()
+        self.calibrator = ConfidenceCalibrator()
+        self.analytics = PerformanceAnalytics()
         self.current_regime = "unknown"
 
         self.bot_step = 1
@@ -794,8 +891,9 @@ class V16Engine:
             for _ in range(3):
                 try:
                     res = requests.post(url, json={"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=15)
-                    if res.status_code == 200: return
-                except:
+                    if res.status_code == 200:
+                        return
+                except Exception:
                     time.sleep(2)
         threading.Thread(target=_send, daemon=True).start()
 
@@ -876,6 +974,32 @@ class V16Engine:
             return report
         return None
 
+    def get_threshold(self):
+        """Advanced Adaptive Threshold"""
+        base = CONFIG['adaptive_base_threshold']
+
+        # 1. Recent WR
+        if len(self.recent_results) >= 20:
+            recent_wr = sum(self.recent_results) / len(self.recent_results)
+            if recent_wr >= 0.65: base -= 0.05
+            elif recent_wr >= 0.55: base -= 0.02
+            elif recent_wr < 0.45: base += 0.05
+
+        # 2. Regime
+        if self.current_regime == "choppy":
+            base += 0.03
+        elif self.current_regime == "trending":
+            base -= 0.02
+
+        # 3. Volatility
+        if len(self.window) >= 20:
+            encoded = [FeatureEngineer.encode(r) for r in list(self.window)[-20:]]
+            std = FeatureEngineer.std(encoded)
+            if std > 0.48:
+                base += 0.02
+
+        return max(0.50, min(base, 0.70))
+
     def get_consensus(self):
         try:
             encoded = [FeatureEngineer.encode(r) for r in self.window]
@@ -889,24 +1013,17 @@ class V16Engine:
             if pred is None:
                 return None, 0, mode, regime
 
-            threshold = self.get_threshold()
-            if conf < threshold:
-                return None, 0, f"Low Conf {conf:.1%}", regime
+            # Calibrate confidence
+            calib_conf = self.calibrator.calibrate(conf)
 
-            return pred, conf, mode, regime
+            threshold = self.get_threshold()
+            if calib_conf < threshold:
+                return None, 0, f"Low Conf {calib_conf:.1%}", regime
+
+            return pred, calib_conf, mode, regime
         except Exception as e:
             print(f"get_consensus Error: {e}", flush=True)
             return None, 0, "Error", "unknown"
-
-    def get_threshold(self):
-        base = CONFIG['adaptive_base_threshold']
-        if len(self.recent_results) < 10:
-            return base + 0.02
-        recent_wr = sum(self.recent_results) / len(self.recent_results)
-        if recent_wr >= 0.65: return base - 0.04
-        elif recent_wr >= 0.55: return base - 0.02
-        elif recent_wr >= 0.48: return base
-        else: return base + 0.04
 
     def process_api_result(self, api_period, api_result, digit=None):
         with self.lock:
@@ -915,7 +1032,7 @@ class V16Engine:
     def _process_internal(self, api_period, api_result, digit):
         try:
             api_period_int = int(api_period)
-        except:
+        except Exception:
             return
         notifications = []
 
@@ -923,14 +1040,17 @@ class V16Engine:
             self.last_digit = digit
             self.digit_history.append(digit)
 
+        # Verify Previous
         if self.active_prediction is not None and self.last_state is not None:
             bot_won = (self.active_prediction == api_result)
             self.recent_results.append(1 if bot_won else 0)
 
             self.meta_agent.update_accuracy(api_result)
 
-            if bot_won: self.total_wins += 1
-            else: self.total_losses += 1
+            if bot_won:
+                self.total_wins += 1
+            else:
+                self.total_losses += 1
 
             bet_amount, bet_type = self.get_current_bet()
 
@@ -939,8 +1059,17 @@ class V16Engine:
                 self.total_profit += profit_amount
                 self.current_profit += profit_amount
             else:
+                profit_amount = -bet_amount
                 self.total_loss_amount += bet_amount
                 self.current_profit -= bet_amount
+
+            # Calibrator update
+            if self.active_prediction is not None:
+                # Use last conf
+                pass
+
+            # Analytics
+            self.analytics.record(bot_won, profit_amount if bot_won else -bet_amount)
 
             self.update_max_tracking()
             action, old_level, old_state = self.on_result(bot_won)
@@ -968,6 +1097,21 @@ class V16Engine:
                     f"📈 <b>LEVEL UP</b>\n"
                     f"🔄 Level {old_level} → Level {self.level}\n"
                     f"💰 Next Bet1: {get_level_bet(self.level)['bet1']:,}"
+                )
+
+            # Check Reactivation/Suspension
+            reactivated = self.meta_agent.check_reactivation()
+            for name, wr in reactivated:
+                notifications.append(
+                    f"✅ <b>Agent Reactivated</b>\n"
+                    f"{name}: {wr:.1%}"
+                )
+
+            suspended = self.meta_agent.check_suspension()
+            for name, wr in suspended:
+                notifications.append(
+                    f"⏸️ <b>Agent Suspended</b>\n"
+                    f"{name}: {wr:.1%}"
                 )
 
             self.update_bot_step(bot_won)
@@ -1004,6 +1148,7 @@ class V16Engine:
                 self.last_state = "active"
                 self.total_signals += 1
                 self.last_bot_step = self.bot_step
+                self.last_conf = conf
 
                 self.meta_agent.record_pending(
                     encoded, self.window, regime, self.digit_history
@@ -1034,11 +1179,122 @@ class V16Engine:
 
 
 # ==========================================
+# 📱 TELEGRAM COMMANDS
+# ==========================================
+def poll_telegram(agent):
+    try:
+        requests.get(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook?drop_pending_updates=true",
+            timeout=10
+        )
+    except Exception:
+        pass
+
+    offset = 0
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={offset}&timeout=20"
+            res = requests.get(url, timeout=25)
+            if res.status_code == 200:
+                for upd in res.json().get("result", []):
+                    offset = upd["update_id"] + 1
+                    msg = upd.get("message", {})
+                    chat = str(msg.get("chat", {}).get("id", ""))
+                    text = msg.get("text", "").strip().lower()
+
+                    if chat != CHAT_ID:
+                        continue
+
+                    if text == "/status":
+                        b, bt = agent.get_current_bet()
+                        agent.send_telegram(
+                            f"📊 <b>STATUS</b>\n\n"
+                            f"🎯 Regime: <b>{agent.current_regime}</b>\n"
+                            f"🤖 Bot Step: <b>{agent.bot_step}x</b>\n"
+                            f"🎮 Level: <b>{agent.level}</b> | {agent.level_state}\n"
+                            f"💰 Bet: <b>{b:,}</b> ({bt})\n\n"
+                            f"🏆 Max Level: {agent.max_level_reached}\n"
+                            f"📉 Max DD: {agent.max_loss_amount:+,.0f}\n"
+                            f"💵 Profit: {agent.current_profit:+,.0f}\n"
+                            f"📊 WR: {agent.get_wr():.1f}%\n"
+                            f"📈 Total: {agent.total_wins}W / {agent.total_losses}L\n"
+                            f"🎯 Signals: {agent.total_signals}"
+                        )
+
+                    elif text == "/reset":
+                        with agent.lock:
+                            agent.level = 1
+                            agent.level_state = "WAITING_BET1"
+                            agent.bot_step = 1
+                            agent.current_profit = 0.0
+                            agent.total_profit = 0.0
+                            agent.total_loss_amount = 0.0
+                            agent.total_wins = 0
+                            agent.total_losses = 0
+                            agent.max_loss_amount = 0.0
+                            agent.max_level_reached = 1
+                            agent.cycles_completed = 0
+                            agent.total_signals = 0
+                            agent.recent_results.clear()
+                        agent.send_telegram("🔄 <b>Manual Reset Done</b>")
+
+                    elif text == "/agent_stats":
+                        msg_text = "📊 <b>Agent Stats</b>\n\n"
+                        stats_list = []
+                        for name, acc_deque in agent.meta_agent.agent_acc.items():
+                            if len(acc_deque) >= 5:
+                                acc = sum(acc_deque) / len(acc_deque)
+                                stats_list.append((name, acc, len(acc_deque)))
+                            else:
+                                stats_list.append((name, 0, len(acc_deque)))
+
+                        stats_list.sort(key=lambda x: x[1], reverse=True)
+                        for name, acc, n in stats_list:
+                            status = "✅" if name in agent.meta_agent.active_agents else "⏸️"
+                            if n >= 5:
+                                msg_text += f"{status} <b>{name}</b>: {acc:.1%} (n={n})\n"
+                            else:
+                                msg_text += f"{status} {name}: warming ({n})\n"
+
+                        msg_text += f"\n<b>Active:</b> {len(agent.meta_agent.active_agents)}"
+                        msg_text += f"\n<b>Suspended:</b> {len(agent.meta_agent.suspended_agents)}"
+                        agent.send_telegram(msg_text)
+
+                    elif text == "/profit":
+                        agent.send_telegram(
+                            f"💰 <b>PROFIT</b>\n\n"
+                            f"💵 Net: <b>{agent.current_profit:+,.0f}</b>\n"
+                            f"📈 Total Profit: <b>+{agent.total_profit:,.0f}</b>\n"
+                            f"📉 Total Loss: <b>-{agent.total_loss_amount:,.0f}</b>\n"
+                            f"🏆 Max Level: <b>{agent.max_level_reached}</b>\n"
+                            f"📉 Max DD: <b>{agent.max_loss_amount:,.0f}</b>"
+                        )
+
+                    elif text == "/help":
+                        agent.send_telegram(
+                            f"📚 <b>COMMANDS</b>\n\n"
+                            f"/status — Bot Status\n"
+                            f"/reset — Manual Reset\n"
+                            f"/agent_stats — Agent Performance\n"
+                            f"/profit — Profit Stats\n"
+                            f"/help — Commands List"
+                        )
+
+        except Exception as e:
+            print(f"TG Poll Error: {e}", flush=True)
+        time.sleep(1)
+
+
+# ==========================================
 # 🌐 API POLLER
 # ==========================================
 def run_bot():
-    print("🚀 V16.2 — 10 Agents + Thompson Sampling", flush=True)
-    agent = V16Engine()
+    print("🚀 V17.0 — Multi-Agent + Auto Reactivate", flush=True)
+    agent = V17Engine()
+
+    # Telegram Command Thread
+    threading.Thread(target=poll_telegram, args=(agent,), daemon=True).start()
+
     last_processed_period = None
     url = CONFIG['api_url']
     auth = LOTTERY_AUTH
@@ -1061,10 +1317,12 @@ def run_bot():
             }
             res = requests.post(url, headers=headers, json=payload, timeout=5)
             if res.status_code != 200:
-                time.sleep(1.5); continue
+                time.sleep(1.5)
+                continue
             data = res.json().get("data", {}).get("list", [])
             if not data:
-                time.sleep(1.5); continue
+                time.sleep(1.5)
+                continue
             latest = data[0]
             raw_period = str(latest.get("issueNumber"))
             number = int(latest.get("number"))
@@ -1084,17 +1342,19 @@ def run_bot():
 @app.route('/')
 def home():
     if not global_agent:
-        return "<h3>🚀 V16.2 starting...</h3>"
+        return "<h3>🚀 V17.0 starting...</h3>"
     a = global_agent
     bet_amount, bet_type = a.get_current_bet()
     return f"""
-    <h2>🚀 V16.2 — 10 Agents + Thompson</h2>
+    <h2>🚀 V17.0 — Auto Reactivate + Advanced</h2>
     <p><b>🎯 Regime:</b> {a.current_regime}</p>
     <p><b>🤖 Bot Step:</b> {a.bot_step}x</p>
     <p><b>🎮 Level:</b> {a.level} | {a.level_state}</p>
     <p><b>💰 Bet:</b> {bet_amount:,} ({bet_type})</p>
     <p><b>💵 Profit:</b> {a.current_profit:+,.0f}</p>
     <p><b>📊 WR:</b> {a.get_wr():.1f}%</p>
+    <p><b>✅ Active Agents:</b> {len(a.meta_agent.active_agents)}</p>
+    <p><b>⏸️ Suspended:</b> {len(a.meta_agent.suspended_agents)}</p>
     """
 
 @app.route('/stats')
@@ -1102,8 +1362,9 @@ def stats():
     if global_agent:
         a = global_agent
         bet_amount, bet_type = a.get_current_bet()
+        today = a.analytics.get_today()
         return {
-            "version": "V16.2",
+            "version": "V17.0",
             "regime": a.current_regime,
             "bot_step": a.bot_step,
             "level": a.level,
@@ -1116,6 +1377,11 @@ def stats():
             "win_rate": f"{a.get_wr():.2f}%",
             "net_profit": round(a.current_profit, 2),
             "max_loss": round(a.max_loss_amount, 2),
+            "active_agents": len(a.meta_agent.active_agents),
+            "suspended_agents": len(a.meta_agent.suspended_agents),
+            "today_wins": today["wins"],
+            "today_losses": today["losses"],
+            "today_profit": round(today["profit"], 2),
         }
     return {"status": "initializing"}
 
@@ -1127,8 +1393,8 @@ def agent_stats():
         for name, acc_deque in a.meta_agent.agent_acc.items():
             if len(acc_deque) >= 5:
                 acc = sum(acc_deque) / len(acc_deque)
-                thompson = a.meta_agent.thompson_stats.get(name, {})
-                result[name] = f"{acc:.1%} (n={len(acc_deque)}, a={thompson.get('a', 0)}, b={thompson.get('b', 0)})"
+                status = "ACTIVE" if name in a.meta_agent.active_agents else "SUSPENDED"
+                result[name] = f"{acc:.1%} (n={len(acc_deque)}, {status})"
             else:
                 result[name] = f"warming ({len(acc_deque)})"
         return dict(sorted(result.items(), key=lambda x: x[1], reverse=True))
@@ -1136,7 +1402,7 @@ def agent_stats():
 
 @app.route('/health')
 def health():
-    return {"status": "ok", "version": "V16.2"}
+    return {"status": "ok", "version": "V17.0"}
 
 
 # ==========================================
