@@ -1,11 +1,19 @@
 """
-🚀 V15.7 — Fixed Logistic Regression + Cold Filter Removed
+🚀 V16.0 — Multi-Agent Bot (5 Agents + Meta-Agent)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Fixes:
-  1. LR Error: 'list' object has no attribute 'shape'  → FIXED
-  2. Cold Streak Deadlock (30+ min skip)                → REMOVED
-  3. Recent results window 50 → 100
-  4. Better error logging
+Agents:
+  1. TrendAgent        — Long-term trend
+  2. MeanReversionAgent — Sideway market
+  3. PatternAgent      — Choppy market
+  4. BreakoutAgent     — Short-term volatile
+  5. FibonacciAgent    — All regimes (support)
+
+Features:
+  - Market Detector (5 regimes)
+  - Regime-based Agent Activation
+  - Weighted Voting with Dynamic Weights
+  - Self-Learning Agent Accuracy
+  - Level State Machine (BET1/BET2)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
@@ -21,9 +29,9 @@ from flask import Flask
 # ==========================================
 # 🔑 CREDENTIALS
 # ==========================================
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
-CHAT_ID = os.environ.get("CHAT_ID", "")
-LOTTERY_AUTH = os.environ.get("LOTTERY_AUTH", "")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8913070806:AAF3rP0zKJtofE-5KVesqcdoHzn7Go0avho")
+CHAT_ID = os.environ.get("CHAT_ID", "-1004402480797")
+LOTTERY_AUTH = os.environ.get("LOTTERY_AUTH", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOiIxNzg3OTgxNTA5IiwibmJmIjoiMTc4Nzk4MTUwOSIsImV4cCI6IjE3ODc5ODMzMDkiLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL2V4cGlyYXRpb24iOiI4LzI5LzIwMjYgMTI6MzE2NDkgUE0iLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL3JvbGUiOiJBY2Nlc3NfVG9rZW4iLCJVc2VySWQiOiIxMDEyMjEzIiwiVXNlck5hbWUiOiI5NTk3NDA5MzkzNzAiLCJVc2VyUGhvdG8iOiI5IiwiTmlja05hbWUiOiJUaGV0R3lpIiwiQW1vdW50IjoiODcuMzAiLCJJbnRlZ3JhbCI6IjAiLCJsb2dpbk1hcmsiOiJINSIsImxvZ2luVGltZSI6IjgvMjkvMjAyNiAxMjowMTo0OSBQTSIsImxvZ2luSVBBZGRyZXNzIjoiNDUuNDEuMTA0LjI0MCIsImRiTnVtYmVyIjoiMCIsIklzdmFsaWRhdG9yIjoiMCIsIktleUNvZGUiOiIzMjMzMiIsImRva2VuVHlwZSI6IjJBY2Nlc3NfVG9rZW4iLCJob25lVHlpZSI6IjAiLCJVc2VyVHlwZSI6IjAiLCJVc2VyTmFtZ2UiOiIuIiwiaXNzIjoiand0SXNzdWVyIiwiYXVkIjoibG90dGVyeVRpY2tldCJ9.ZL0Y9gexUTCsKwWeZhCLAAw8AABEYJt0GnIzIviMG4g")
 
 COLOUR_MAP = {
     0: "Violet+Red", 1: "Green", 2: "Red", 3: "Green", 4: "Red",
@@ -35,27 +43,17 @@ COLOUR_MAP = {
 # ==========================================
 CONFIG = {
     "window_size": 60,
-    "min_data_before_signal": 12,
-    "adaptive_base_threshold": 0.52,
-    "min_agreement": 3,
-    "min_models_for_signal": 3,
-    "min_margin": 0.08,
-    "q_lr": 0.35,
-    "q_discount": 0.95,
-    "q_epsilon": 0.10,
-    "q_epsilon_decay": 0.998,
-    "q_min_epsilon": 0.02,
-    "lr_lr": 0.008,
-    "lr_epochs": 3,
-    "adaptive_weight_alpha": 0.25,
-    "rolling_accuracy_window": 100,
+    "min_data_before_signal": 20,
+    "adaptive_base_threshold": 0.58,
+    "min_margin": 0.12,
+    "min_agents_for_signal": 2,
     "api_url": "https://6lotteryapi.com/api/webapi/GetNoaverageEmerdList",
     "payout_rate": 0.96,
     "profit_reset_threshold": 100000,
 }
 
 # ==========================================
-# 📊 LEVEL TABLE
+# 📊 LEVEL TABLE (1-30) + Fibonacci 31+
 # ==========================================
 LEVEL_TABLE = {
     1:  {"bet1": 1000,    "bet2": 2000},
@@ -106,7 +104,7 @@ global_agent = None
 
 
 # ==========================================
-# 📈 DFA
+# 📈 DFA ENGINE
 # ==========================================
 def calculate_dfa(series, min_scale=6, max_scale=None):
     data = np.asarray(series, dtype=np.float64)
@@ -177,38 +175,10 @@ class FeatureEngineer:
         return -(p_big * math.log2(p_big) + p_small * math.log2(p_small))
 
     @staticmethod
-    def ma(lst, period):
-        if not lst: return 0.5
-        if len(lst) < period: return sum(lst) / len(lst)
-        return sum(list(lst)[-period:]) / period
-
-    @staticmethod
-    def variance(lst):
+    def std(lst):
         if len(lst) < 2: return 0.0
         mean = sum(lst) / len(lst)
-        return sum((x - mean) ** 2 for x in lst) / len(lst)
-
-    @staticmethod
-    def std(lst): return math.sqrt(FeatureEngineer.variance(lst))
-
-    @staticmethod
-    def autocorr(lst, lag=1):
-        n = len(lst)
-        if n < lag + 1: return 0.0
-        mean = sum(lst) / n
-        num = sum((lst[i] - mean) * (lst[i - lag] - mean) for i in range(lag, n))
-        den = sum((x - mean) ** 2 for x in lst)
-        return num / den if den != 0 else 0.0
-
-    @staticmethod
-    def fft_freq(lst):
-        if len(lst) < 8: return 0.0
-        arr = np.array(lst)
-        mags = np.abs(np.fft.fft(arr))
-        if len(mags) > 1:
-            dom = np.argmax(mags[1:]) + 1
-            return dom / len(lst)
-        return 0.0
+        return math.sqrt(sum((x - mean) ** 2 for x in lst) / len(lst))
 
     @staticmethod
     def flip_rate(encoded):
@@ -216,124 +186,365 @@ class FeatureEngineer:
         flips = sum(1 for i in range(len(encoded) - 1) if encoded[i] != encoded[i + 1])
         return flips / (len(encoded) - 1)
 
-    @staticmethod
-    def to_vector(encoded):
-        n = len(encoded)
-        return [
-            FeatureEngineer.ma(encoded, 10),
-            FeatureEngineer.ma(encoded, 30),
-            FeatureEngineer.ma(encoded, 10) / max(FeatureEngineer.ma(encoded, 30), 0.01),
-            FeatureEngineer.variance(encoded),
-            FeatureEngineer.std(encoded),
-            FeatureEngineer.autocorr(encoded, 1),
-            FeatureEngineer.autocorr(encoded, 2),
-            FeatureEngineer.autocorr(encoded, 3),
-            FeatureEngineer.fft_freq(encoded),
-            FeatureEngineer.entropy(encoded),
-            sum(encoded[-3:]) / 3.0 if n >= 3 else 0.5,
-            sum(encoded[-5:]) / 5.0 if n >= 5 else 0.5,
-            sum(encoded[-10:]) / 10.0 if n >= 10 else 0.5,
-            FeatureEngineer.streak(encoded),
-            FeatureEngineer.flip_rate(encoded),
-            n / CONFIG['window_size'],
-        ]
+
+# ==========================================
+# 🎯 AGENT 1: TREND AGENT (Long-term)
+# ==========================================
+class TrendAgent:
+    """Long-term trend follow — DFA > 0.55"""
+    NAME = "trend"
+
+    def predict(self, encoded, window):
+        if len(encoded) < 20:
+            return None, 0
+
+        # Trend direction
+        ma_short = sum(encoded[-10:]) / 10
+        ma_long = sum(encoded[-30:]) / 30 if len(encoded) >= 30 else sum(encoded) / len(encoded)
+        trend_strength = abs(ma_short - ma_long)
+
+        # Streak
+        streak = FeatureEngineer.streak(encoded)
+
+        # DFA
+        alpha = calculate_dfa(encoded)
+
+        # Strong trend
+        if trend_strength > 0.18 and streak >= 3 and alpha > 0.53:
+            pred = 1 if encoded[-1] == 1 else 0
+            conf = 0.62 + min(streak * 0.03, 0.18)
+            return ("Big" if pred == 1 else "Small"), min(conf, 0.82)
+
+        # Momentum-based trend
+        if trend_strength > 0.25:
+            pred = 1 if ma_short > ma_long else 0
+            return ("Big" if pred == 1 else "Small"), 0.60
+
+        return None, 0
 
 
 # ==========================================
-# 🤖 LOGISTIC REGRESSION (FIXED)
+# 🎯 AGENT 2: MEAN REVERSION AGENT (Sideway)
 # ==========================================
-class LogisticRegression:
-    def __init__(self, input_size, lr=0.008):
-        self.lr = lr
-        self.input_size = input_size
-        scale = math.sqrt(2.0 / input_size)
-        self.W = np.random.randn(input_size, 1) * scale
-        self.b = np.zeros((1, 1))
-        self.loss = 0.0
+class MeanReversionAgent:
+    """Sideway market — mean reversion"""
+    NAME = "mean_rev"
 
-    def sigmoid(self, z): 
-        return 1.0 / (1.0 + np.exp(-np.clip(z, -500, 500)))
+    def predict(self, encoded, window):
+        if len(encoded) < 15:
+            return None, 0
 
-    def forward(self, X): 
-        return self.sigmoid(np.dot(X, self.W) + self.b)
+        # Short-term momentum
+        short_mom = sum(encoded[-5:]) / 5
+        long_ma = sum(encoded[-20:]) / 20 if len(encoded) >= 20 else sum(encoded) / len(encoded)
+        deviation = short_mom - long_ma
 
-    def train(self, X, y, epochs=3):
-        """✅ FIXED: List → np.array အရင် ပြောင်း"""
-        try:
-            # ✅ List ကို np.array အရင် ပြောင်း
-            X = np.array(X, dtype=np.float64)
-            y = np.array(y, dtype=np.float64)
-            
-            # ✅ ndim စစ်
-            if X.ndim == 1:
-                X = X.reshape(1, -1)
-            if X.ndim != 2:
-                return self.loss  # Skip bad data
-            if y.ndim == 1:
-                y = y.reshape(-1, 1)
-            
-            # ✅ Shape စစ်
-            if X.shape[1] != self.input_size:
-                return self.loss  # Skip wrong size
-            
-            for _ in range(epochs):
-                preds = self.forward(X)
-                loss = -np.mean(y * np.log(preds + 1e-8) + (1 - y) * np.log(1 - preds + 1e-8))
-                self.loss = float(loss)
-                m = X.shape[0]
-                if m == 0:
-                    return self.loss
-                error = preds - y
-                self.W -= self.lr * (np.dot(X.T, error) / m)
-                self.b -= self.lr * (np.sum(error, axis=0, keepdims=True) / m)
-            return self.loss
-        except Exception as e:
-            print(f"LR Train Error: {e}", flush=True)
-            return self.loss
+        # DFA (should be ~0.5 for sideway)
+        alpha = calculate_dfa(encoded)
 
-    def predict(self, X): 
-        """✅ FIXED: Shape စစ်"""
-        try:
-            X = np.array(X, dtype=np.float64)
-            if X.ndim == 1:
-                X = X.reshape(1, -1)
-            if X.shape[1] != self.input_size:
-                return 0.5  # Default
-            return float(self.forward(X)[0][0])
-        except Exception as e:
-            print(f"LR Predict Error: {e}", flush=True)
-            return 0.5
+        # Overbought / Oversold (only in sideway)
+        if 0.45 <= alpha <= 0.55:
+            if deviation > 0.30:
+                # Overbought → Small
+                return "Small", 0.60 + min(deviation * 0.3, 0.12)
+            elif deviation < -0.30:
+                # Oversold → Big
+                return "Big", 0.60 + min(abs(deviation) * 0.3, 0.12)
+
+        # Extreme deviation
+        if abs(deviation) > 0.40:
+            pred = 0 if deviation > 0 else 1
+            return ("Big" if pred == 1 else "Small"), 0.62
+
+        return None, 0
 
 
 # ==========================================
-# 🎯 V15.7 ENGINE
+# 🎯 AGENT 3: PATTERN AGENT (Choppy)
 # ==========================================
-class V15Engine:
+class PatternAgent:
+    """Choppy market — pattern recognition"""
+    NAME = "pattern"
+
+    def predict(self, encoded, window):
+        if len(encoded) < 10:
+            return None, 0
+
+        # 1. Alternating pattern
+        alt_streak = FeatureEngineer.alternating_streak(encoded)
+        if alt_streak >= 3:
+            pred = 1 - encoded[-1]
+            conf = 0.60 + min((alt_streak - 3) * 0.03, 0.15)
+            return ("Big" if pred == 1 else "Small"), conf
+
+        # 2. Repeat pattern (overextended)
+        streak = FeatureEngineer.streak(encoded)
+        if streak >= 6:
+            pred = 1 - encoded[-1]
+            return ("Big" if pred == 1 else "Small"), 0.70
+        elif streak >= 4:
+            pred = encoded[-1]
+            return ("Big" if pred == 1 else "Small"), 0.63
+
+        return None, 0
+
+
+# ==========================================
+# 🎯 AGENT 4: BREAKOUT AGENT (Short-term)
+# ==========================================
+class BreakoutAgent:
+    """Short-term volatile — breakout detection"""
+    NAME = "breakout"
+
+    def predict(self, encoded, window):
+        if len(encoded) < 8:
+            return None, 0
+
+        # Recent volatility
+        recent_5 = encoded[-5:]
+        recent_std = FeatureEngineer.std(recent_5)
+
+        # Momentum acceleration
+        short_mom = sum(encoded[-3:]) / 3
+        prev_mom = sum(encoded[-6:-3]) / 3 if len(encoded) >= 6 else 0.5
+        accel = short_mom - prev_mom
+
+        # Breakout with volatility
+        if abs(accel) > 0.35:
+            pred = 1 if accel > 0 else 0
+            conf = 0.58 + min(abs(accel) * 0.3, 0.15)
+            return ("Big" if pred == 1 else "Small"), conf
+
+        # High volatility reversal
+        if recent_std > 0.48:
+            pred = 1 - encoded[-1]
+            return ("Big" if pred == 1 else "Small"), 0.56
+
+        return None, 0
+
+
+# ==========================================
+# 🎯 AGENT 5: FIBONACCI AGENT (All regimes)
+# ==========================================
+class FibonacciAgent:
+    """Fibonacci window — all regimes"""
+    NAME = "fibonacci"
+
+    def predict(self, encoded, window):
+        if len(encoded) < 21:
+            return None, 0
+
+        fibs = [3, 5, 8, 13]
+        votes = {0: 0.0, 1: 0.0}
+
+        for fib in fibs:
+            if len(encoded) < fib + 1:
+                continue
+            if encoded[-1] == encoded[-(fib + 1)]:
+                if fib > 1 and len(encoded) >= fib:
+                    votes[encoded[-(fib - 1)]] += 1.0 / fib
+
+        total = votes[0] + votes[1]
+        if total < 0.4:
+            return None, 0
+
+        pred = 1 if votes[1] > votes[0] else 0
+        conf = max(votes.values()) / total
+        return ("Big" if pred == 1 else "Small"), min(0.55 + conf * 0.25, 0.75)
+
+
+# ==========================================
+# 🧠 MARKET DETECTOR
+# ==========================================
+class MarketDetector:
+    """Detect market regime"""
+
+    def detect(self, encoded):
+        if len(encoded) < 20:
+            return "unknown", 0.5
+
+        alpha = calculate_dfa(encoded)
+        entropy = FeatureEngineer.entropy(encoded, 20)
+        flip_rate = FeatureEngineer.flip_rate(encoded[-20:])
+
+        short_mom = sum(encoded[-5:]) / 5
+        long_mom = sum(encoded[-20:]) / 20
+        momentum_shift = short_mom - long_mom
+
+        std = FeatureEngineer.std(encoded[-10:])
+
+        # === Classification ===
+        if alpha > 0.55 and abs(momentum_shift) > 0.25:
+            return "trending", alpha
+
+        elif entropy > 0.90 and flip_rate > 0.60:
+            return "choppy", entropy
+
+        elif alpha < 0.48 and abs(momentum_shift) < 0.20:
+            return "sideway", 1 - alpha
+
+        elif std > 0.45:
+            return "volatile", std
+
+        else:
+            return "neutral", 0.5
+
+
+# ==========================================
+# 🎯 META-AGENT — Voting System
+# ==========================================
+class MetaAgent:
+    """Meta-agent — combines all agents with weighted voting"""
+
+    def __init__(self):
+        self.trend_agent = TrendAgent()
+        self.mean_rev_agent = MeanReversionAgent()
+        self.pattern_agent = PatternAgent()
+        self.breakout_agent = BreakoutAgent()
+        self.fib_agent = FibonacciAgent()
+
+        # Agent weights (dynamic)
+        self.agent_weights = {
+            "trend": 1.0,
+            "mean_rev": 1.0,
+            "pattern": 1.0,
+            "breakout": 1.0,
+            "fibonacci": 1.0,
+        }
+
+        # Per-agent accuracy
+        self.agent_acc = {k: deque(maxlen=50) for k in self.agent_weights}
+        self.pending_agents = {}
+
+    def get_active_agents(self, regime):
+        """Regime-based agent selection"""
+        if regime == "trending":
+            return ["trend", "breakout", "fibonacci"]
+        elif regime == "sideway":
+            return ["mean_rev", "pattern", "fibonacci"]
+        elif regime == "choppy":
+            return ["pattern", "fibonacci", "mean_rev"]
+        elif regime == "volatile":
+            return ["breakout", "trend", "fibonacci"]
+        else:  # neutral / unknown
+            return ["trend", "mean_rev", "pattern", "breakout", "fibonacci"]
+
+    def predict(self, encoded, window, regime):
+        active = self.get_active_agents(regime)
+        signals = {}
+
+        agents_map = {
+            "trend": self.trend_agent,
+            "mean_rev": self.mean_rev_agent,
+            "pattern": self.pattern_agent,
+            "breakout": self.breakout_agent,
+            "fibonacci": self.fib_agent,
+        }
+
+        for name in active:
+            result = agents_map[name].predict(encoded, window)
+            if result[0] and result[1] > 0:
+                signals[name] = result
+
+        # Min agents check
+        if len(signals) < CONFIG['min_agents_for_signal']:
+            return None, 0, f"Agents {len(signals)}/{len(active)}", regime
+
+        # Weighted voting
+        big_score = 0.0
+        small_score = 0.0
+
+        for name, (pred, conf) in signals.items():
+            weight = self.agent_weights.get(name, 1.0)
+
+            # Dynamic weight from accuracy
+            if len(self.agent_acc[name]) >= 10:
+                acc = sum(self.agent_acc[name]) / len(self.agent_acc[name])
+                weight = 0.5 + acc * 1.5
+
+            weighted = conf * weight
+            if pred == "Big":
+                big_score += weighted
+            else:
+                small_score += weighted
+
+        total = big_score + small_score
+        if total == 0:
+            return None, 0, "No Vote", regime
+
+        margin = abs(big_score - small_score) / total
+        if margin < CONFIG['min_margin']:
+            return None, 0, f"Low Margin {margin:.0%}", regime
+
+        confidence = max(big_score, small_score) / total
+        # Cap at 95% to prevent false confidence
+        confidence = min(confidence, 0.95)
+
+        if big_score > small_score:
+            return "Big", confidence, f"🎯 Agent[{len(signals)}] {regime}", regime
+        else:
+            return "Small", confidence, f"🎯 Agent[{len(signals)}] {regime}", regime
+
+    def update_accuracy(self, actual):
+        """Update agent accuracy from pending"""
+        for name, pred in self.pending_agents.items():
+            is_correct = 1 if pred == actual else 0
+            if name in self.agent_acc:
+                self.agent_acc[name].append(is_correct)
+        self.pending_agents.clear()
+
+    def record_pending(self, encoded, window, regime):
+        """Record all active agents' predictions"""
+        active = self.get_active_agents(regime)
+        agents_map = {
+            "trend": self.trend_agent,
+            "mean_rev": self.mean_rev_agent,
+            "pattern": self.pattern_agent,
+            "breakout": self.breakout_agent,
+            "fibonacci": self.fib_agent,
+        }
+        self.pending_agents = {}
+        for name in active:
+            result = agents_map[name].predict(encoded, window)
+            if result[0]:
+                self.pending_agents[name] = result[0]
+
+
+# ==========================================
+# 🎯 V16.0 ENGINE
+# ==========================================
+class V16Engine:
     def __init__(self):
         global global_agent
         global_agent = self
         self.lock = threading.Lock()
         self.window = deque(maxlen=CONFIG['window_size'])
         self.digit_history = deque(maxlen=120)
-        
+
         self.active_prediction = None
         self.last_state = None
         self.last_digit = None
         self.last_bot_step = None
-        
+
+        # Agents
+        self.market_detector = MarketDetector()
+        self.meta_agent = MetaAgent()
+        self.current_regime = "unknown"
+        self.regime_history = deque(maxlen=50)
+
         # Signal Bot Step
         self.bot_step = 1
-        
+
         # Level State Machine
         self.level = 1
         self.level_state = "WAITING_BET1"
         self.current_bet = 0
-        
+
         # Stats
         self.total_signals = 0
         self.total_wins = 0
         self.total_losses = 0
-        self.recent_results = deque(maxlen=100)  # ✅ 50 → 100
+        self.recent_results = deque(maxlen=100)
         self.total_profit = 0.0
         self.total_loss_amount = 0.0
         self.current_profit = 0.0
@@ -342,29 +553,6 @@ class V15Engine:
         self.cycles_completed = 0
         self.max_level_reached = 1
         self.profit_resets = 0
-        
-        # Model accuracy
-        self.model_acc = {k: deque(maxlen=40) for k in [
-            "markov2", "markov3", "repeat", "alternating", "momentum",
-            "digit", "fibonacci", "support_res", "gap", "bayesian",
-            "qlearning", "logreg", "regime_aware"
-        ]}
-        self.model_weights = {k: 1.0 for k in self.model_acc}
-        self.pending_models = {}
-        
-        # Q-Learning
-        self.q_table = {}
-        self.q_lr = CONFIG['q_lr']
-        self.q_discount = CONFIG['q_discount']
-        self.epsilon = CONFIG['q_epsilon']
-        
-        # Logistic Regression
-        self.lr_model = LogisticRegression(input_size=16, lr=CONFIG['lr_lr'])
-        self.lr_train_X = deque(maxlen=200)
-        self.lr_train_y = deque(maxlen=200)
-        
-        self.regime = "unknown"
-        self.is_paused = False
 
     # ==========================================
     # 📤 TELEGRAM
@@ -389,7 +577,7 @@ class V15Engine:
     def get_wr(self):
         total = self.total_wins + self.total_losses
         return (self.total_wins / total * 100) if total > 0 else 0.0
-    
+
     def update_max_tracking(self):
         if self.current_profit < self.max_loss_amount:
             self.max_loss_amount = self.current_profit
@@ -409,7 +597,7 @@ class V15Engine:
     def on_result(self, won):
         old_level = self.level
         old_state = self.level_state
-        
+
         if self.level_state == "WAITING_BET1":
             if won:
                 self.level_state = "WAITING_BET2"
@@ -473,294 +661,30 @@ class V15Engine:
         return None
 
     # ==========================================
-    # Q-LEARNING
+    # 🎯 AGENT CONSENSUS
     # ==========================================
-    def get_state_key(self):
-        if len(self.window) < 5:
-            return "Big,Big,Big,Big,Big"
-        return ",".join(list(self.window)[-5:])
-
-    def get_q_action(self, state):
-        if state not in self.q_table:
-            self.q_table[state] = {"Big": 0.5, "Small": 0.5}
-        actions = self.q_table[state]
-        if np.random.random() < self.epsilon:
-            return "Big" if np.random.random() < 0.5 else "Small"
-        return "Big" if actions["Big"] >= actions["Small"] else "Small"
-
-    def update_q_table(self, state, action, reward):
-        if state not in self.q_table:
-            self.q_table[state] = {"Big": 0.5, "Small": 0.5}
-        old_q = self.q_table[state][action]
-        new_q = old_q + self.q_lr * (reward + self.q_discount * max(self.q_table[state].values()) - old_q)
-        self.q_table[state][action] = new_q
-
-    def update_epsilon(self):
-        self.epsilon = max(CONFIG['q_min_epsilon'], self.epsilon * CONFIG['q_epsilon_decay'])
-
-    # ==========================================
-    # 13 MODELS
-    # ==========================================
-    def markov_order2(self, encoded):
-        if len(encoded) < 10: return None, 0
-        pair = (encoded[-2], encoded[-1])
-        trans = {0: 0, 1: 0}
-        for i in range(len(encoded) - 2):
-            if (encoded[i], encoded[i+1]) == pair:
-                trans[encoded[i+2]] += 1
-        total = trans[0] + trans[1]
-        if total < 3: return None, 0
-        pred = 1 if trans[1] > trans[0] else 0
-        return ("Big" if pred == 1 else "Small"), max(trans.values()) / total
-
-    def markov_order3(self, encoded):
-        if len(encoded) < 15: return None, 0
-        pattern = tuple(encoded[-3:])
-        trans = {0: 0, 1: 0}
-        for i in range(len(encoded) - 3):
-            if tuple(encoded[i:i+3]) == pattern:
-                trans[encoded[i+3]] += 1
-        total = trans[0] + trans[1]
-        if total < 2: return None, 0
-        pred = 1 if trans[1] > trans[0] else 0
-        return ("Big" if pred == 1 else "Small"), min((max(trans.values()) / total) * 1.15, 0.85)
-
-    def repeat_pattern(self, encoded):
-        streak = FeatureEngineer.streak(encoded)
-        if streak < 2: return None, 0
-        if streak <= 3: return ("Big" if encoded[-1] == 1 else "Small"), 0.58
-        elif streak <= 5: return ("Big" if encoded[-1] == 1 else "Small"), 0.65
-        else:
-            pred = 1 - encoded[-1]
-            return ("Big" if pred == 1 else "Small"), 0.70
-
-    def alternating_pattern(self, encoded):
-        alt_streak = FeatureEngineer.alternating_streak(encoded)
-        if alt_streak < 3: return None, 0
-        pred = 1 - encoded[-1]
-        conf = 0.60 + min((alt_streak - 3) * 0.03, 0.12)
-        return ("Big" if pred == 1 else "Small"), conf
-
-    def momentum_shift(self, encoded):
-        if len(encoded) < 12: return None, 0
-        short_mom = FeatureEngineer.momentum(encoded, 5)
-        long_mom = FeatureEngineer.momentum(encoded, 12)
-        shift = short_mom - long_mom
-        if shift > 0.35: return "Big", 0.60
-        elif shift < -0.35: return "Small", 0.60
-        elif short_mom > 0.75: return "Small", 0.58
-        elif short_mom < 0.25: return "Big", 0.58
-        return None, 0
-
-    def digit_transition(self):
-        if len(self.digit_history) < 25: return None, 0
-        hist = list(self.digit_history)
-        last_d = hist[-1]
-        trans = Counter()
-        for i in range(len(hist) - 1):
-            if hist[i] == last_d: trans[hist[i+1]] += 1
-        if len(trans) < 3: return None, 0
-        total = sum(trans.values())
-        nxt_d, cnt = trans.most_common(1)[0]
-        prob = cnt / total
-        if prob < 0.25: return None, 0
-        pred = "Big" if nxt_d >= 5 else "Small"
-        return pred, min(prob * 1.3, 0.78)
-
-    def fibonacci_window(self, encoded):
-        if len(encoded) < 21: return None, 0
-        fibs = [3, 5, 8, 13]
-        votes = {0: 0.0, 1: 0.0}
-        for fib in fibs:
-            if len(encoded) < fib + 1: continue
-            if encoded[-1] == encoded[-(fib + 1)]:
-                if fib > 1 and len(encoded) >= fib:
-                    votes[encoded[-(fib - 1)]] += 1.0 / fib
-        total = votes[0] + votes[1]
-        if total < 0.4: return None, 0
-        pred = 1 if votes[1] > votes[0] else 0
-        conf = max(votes.values()) / total
-        return ("Big" if pred == 1 else "Small"), min(0.50 + conf * 0.25, 0.72)
-
-    def support_resistance(self, encoded):
-        if len(encoded) < 25: return None, 0
-        current_streak = FeatureEngineer.streak(encoded)
-        current_val = encoded[-1]
-        streaks, count = [], 1
-        for i in range(1, len(encoded)):
-            if encoded[i] == encoded[i-1]: count += 1
-            else:
-                if encoded[i-1] == current_val: streaks.append(count)
-                count = 1
-        if encoded[-1] == current_val: streaks.append(count)
-        if len(streaks) < 3: return None, 0
-        avg_streak = sum(streaks) / len(streaks)
-        max_streak = max(streaks)
-        if current_streak > avg_streak * 1.5:
-            conf = min(0.55 + (current_streak - avg_streak) * 0.04, 0.72)
-            pred = 1 - current_val
-            return ("Big" if pred == 1 else "Small"), conf
-        if current_streak >= max_streak - 1:
-            pred = 1 - current_val
-            return ("Big" if pred == 1 else "Small"), 0.62
-        if current_streak < avg_streak * 0.7:
-            return ("Big" if current_val == 1 else "Small"), 0.56
-        return None, 0
-
-    def gap_pattern(self, encoded):
-        if len(encoded) < 20: return None, 0
-        pattern = tuple(encoded[-3:])
-        occurrences = [i for i in range(len(encoded) - 3) if tuple(encoded[i:i+3]) == pattern]
-        if len(occurrences) < 2: return None, 0
-        next_vals = [encoded[occ + 3] for occ in occurrences if occ + 3 < len(encoded)]
-        if len(next_vals) < 2: return None, 0
-        big_count = sum(next_vals)
-        small_count = len(next_vals) - big_count
-        if big_count >= small_count * 1.5:
-            return "Big", min(0.55 + (big_count / len(next_vals)) * 0.20, 0.72)
-        elif small_count >= big_count * 1.5:
-            return "Small", min(0.55 + (small_count / len(next_vals)) * 0.20, 0.72)
-        return None, 0
-
-    def bayesian_predict(self, encoded):
-        if len(encoded) < 15: return None, 0
-        recent = encoded[-15:]
-        recent_big = sum(recent)
-        recent_small = len(recent) - recent_big
-        alpha_big = recent_big + 1
-        alpha_small = recent_small + 1
-        total = alpha_big + alpha_small
-        post_big = (alpha_big * 0.5) / total
-        post_small = (alpha_small * 0.5) / total
-        total_post = post_big + post_small
-        post_big /= total_post
-        post_small /= total_post
-        streak = FeatureEngineer.streak(encoded)
-        last_val = encoded[-1]
-        if streak >= 4:
-            if last_val == 1: post_small *= 1.15
-            else: post_big *= 1.15
-        elif streak <= 2:
-            if last_val == 1: post_big *= 1.05
-            else: post_small *= 1.05
-        total_post = post_big + post_small
-        post_big /= total_post
-        post_small /= total_post
-        if post_big > post_small:
-            if post_big < 0.52: return None, 0
-            return "Big", min(post_big, 0.78)
-        else:
-            if post_small < 0.52: return None, 0
-            return "Small", min(post_small, 0.78)
-
-    def qlearning_predict(self, state_key):
-        return self.get_q_action(state_key), 0.60
-
-    def logreg_predict(self, encoded):
-        """✅ FIXED: List → np.array"""
-        try:
-            vec = FeatureEngineer.to_vector(encoded)
-            
-            if len(self.lr_train_X) >= 20:
-                X = np.array(list(self.lr_train_X)[-50:], dtype=np.float64)
-                y = np.array(list(self.lr_train_y)[-50:], dtype=np.float64)
-                
-                # ✅ ndim စစ်
-                if X.ndim == 1:
-                    X = X.reshape(-1, 1)
-                if y.ndim == 1:
-                    y = y.reshape(-1, 1)
-                
-                # ✅ Shape စစ်
-                if X.shape[1] == 16:
-                    self.lr_model.train(X, y, epochs=CONFIG['lr_epochs'])
-            
-            # ✅ Predict
-            out = self.lr_model.predict(vec)
-            return ("Big" if out > 0.5 else "Small"), max(out, 1 - out)
-        except Exception as e:
-            print(f"LR Predict Error: {e}", flush=True)
-            return None, 0
-
-    def regime_aware_predict(self, encoded):
-        if len(encoded) < 10: return None, 0
-        last_10 = encoded[-10:]
-        flips = sum(1 for i in range(len(last_10) - 1) if last_10[i] != last_10[i + 1])
-        flip_ratio = flips / 9.0
-        recent_5 = sum(last_10[-5:]) / 5.0
-        prev_5 = sum(last_10[:5]) / 5.0
-        momentum = recent_5 - prev_5
-        if flip_ratio < 0.3 and abs(momentum) > 0.3:
-            self.regime = "trending"
-            return ("Big" if encoded[-1] == 1 else "Small"), 0.65
-        elif flip_ratio > 0.6:
-            self.regime = "choppy"
-            streak = FeatureEngineer.streak(encoded[-5:])
-            if streak >= 3:
-                pred = 1 - encoded[-1]
-                return ("Big" if pred == 1 else "Small"), 0.62
-            return ("Big" if encoded[-1] == 1 else "Small"), 0.55
-        else:
-            self.regime = "neutral"
-            recent_big = sum(encoded[-5:]) / 5.0
-            return ("Big" if recent_big > 0.5 else "Small"), 0.58
-
     def get_consensus(self):
         encoded = [FeatureEngineer.encode(r) for r in self.window]
-        state_key = self.get_state_key()
-        signals = {}
 
-        for name, (pred, conf) in [
-            ("markov2", self.markov_order2(encoded)),
-            ("markov3", self.markov_order3(encoded)),
-            ("repeat", self.repeat_pattern(encoded)),
-            ("alternating", self.alternating_pattern(encoded)),
-            ("momentum", self.momentum_shift(encoded)),
-            ("digit", self.digit_transition()),
-            ("fibonacci", self.fibonacci_window(encoded)),
-            ("support_res", self.support_resistance(encoded)),
-            ("gap", self.gap_pattern(encoded)),
-            ("bayesian", self.bayesian_predict(encoded)),
-            ("qlearning", self.qlearning_predict(state_key)),
-            ("logreg", self.logreg_predict(encoded)),
-            ("regime_aware", self.regime_aware_predict(encoded)),
-        ]:
-            if pred and conf > 0:
-                signals[name] = (pred, conf)
+        # Market Detection
+        regime, strength = self.market_detector.detect(encoded)
+        self.current_regime = regime
+        self.regime_history.append(regime)
 
-        if len(signals) < CONFIG['min_models_for_signal']:
-            return None, 0, f"Insufficient ({len(signals)})", 0.5
+        # Agent Prediction
+        pred, conf, mode, regime = self.meta_agent.predict(
+            encoded, self.window, regime
+        )
 
-        big_models = sum(1 for p, c in signals.values() if p == "Big")
-        small_models = len(signals) - big_models
-        agreement = max(big_models, small_models)
+        if pred is None:
+            return None, 0, mode, regime
 
-        if agreement < CONFIG['min_agreement']:
-            return None, 0, f"Low Agreement {agreement}/{len(signals)}", 0.5
+        # Threshold check
+        threshold = self.get_threshold()
+        if conf < threshold:
+            return None, 0, f"Low Conf {conf:.1%}", regime
 
-        big_score, small_score = 0.0, 0.0
-        for name, (pred, conf) in signals.items():
-            weight = self.model_weights.get(name, 1.0)
-            if len(self.model_acc.get(name, deque())) >= 5:
-                acc = sum(self.model_acc[name]) / len(self.model_acc[name])
-                weight = 0.6 + acc * 0.8
-            weighted = conf * weight
-            if pred == "Big": big_score += weighted
-            else: small_score += weighted
-
-        total = big_score + small_score
-        if total == 0:
-            return None, 0, "No Vote", 0.5
-
-        margin = abs(big_score - small_score) / total
-        if margin < CONFIG['min_margin']:
-            return None, 0, f"Low Margin {margin:.0%}", 0.5
-
-        alpha = calculate_dfa(encoded)
-        if big_score > small_score:
-            return "Big", big_score / total, f"⚡13-Ens[{len(signals)}] {self.regime}", alpha
-        else:
-            return "Small", small_score / total, f"⚡13-Ens[{len(signals)}] {self.regime}", alpha
+        return pred, conf, mode, regime
 
     def get_threshold(self):
         base = CONFIG['adaptive_base_threshold']
@@ -771,46 +695,6 @@ class V15Engine:
         elif recent_wr >= 0.55: return base - 0.02
         elif recent_wr >= 0.48: return base
         else: return base + 0.04
-
-    def should_skip(self, encoded, alpha, entropy):
-        """✅ FIXED: Cold Filter ဖျက်"""
-        reasons = []
-        if entropy > 0.99: 
-            reasons.append("Max Entropy")
-        # ❌ Cold Filter ဖျက် — Deadlock ဖြတ်
-        # if len(self.recent_results) >= 15:
-        #     recent_wr = sum(self.recent_results) / len(self.recent_results)
-        #     if recent_wr < 0.35:
-        #         reasons.append(f"Cold {recent_wr:.0%}")
-        return (len(reasons) > 0), ", ".join(reasons)
-
-    def update_model_accuracy(self, actual):
-        for name, pred in self.pending_models.items():
-            is_correct = 1 if pred == actual else 0
-            if name in self.model_acc:
-                self.model_acc[name].append(is_correct)
-        self.pending_models.clear()
-
-    def record_pending_models(self):
-        encoded = [FeatureEngineer.encode(r) for r in self.window]
-        state_key = self.get_state_key()
-        self.pending_models = {}
-        for name, (pred, conf) in [
-            ("markov2", self.markov_order2(encoded)),
-            ("markov3", self.markov_order3(encoded)),
-            ("repeat", self.repeat_pattern(encoded)),
-            ("alternating", self.alternating_pattern(encoded)),
-            ("momentum", self.momentum_shift(encoded)),
-            ("digit", self.digit_transition()),
-            ("fibonacci", self.fibonacci_window(encoded)),
-            ("support_res", self.support_resistance(encoded)),
-            ("gap", self.gap_pattern(encoded)),
-            ("bayesian", self.bayesian_predict(encoded)),
-            ("qlearning", self.qlearning_predict(state_key)),
-            ("logreg", self.logreg_predict(encoded)),
-            ("regime_aware", self.regime_aware_predict(encoded)),
-        ]:
-            if pred: self.pending_models[name] = pred
 
     # ==========================================
     # 🎯 MAIN PROCESS
@@ -828,27 +712,20 @@ class V15Engine:
             self.last_digit = digit
             self.digit_history.append(digit)
 
-        # Verify Previous
+        # Verify Previous Prediction
         if self.active_prediction is not None and self.last_state is not None:
             bot_won = (self.active_prediction == api_result)
             self.recent_results.append(1 if bot_won else 0)
 
-            reward = 5.0 if bot_won else -5.0
-            self.update_q_table(self.last_state, self.active_prediction, reward)
-            self.update_epsilon()
-            self.update_model_accuracy(api_result)
-
-            if len(self.window) >= 5:
-                encoded = [FeatureEngineer.encode(r) for r in self.window]
-                self.lr_train_X.append(FeatureEngineer.to_vector(encoded))
-                self.lr_train_y.append([FeatureEngineer.encode(api_result)])
+            # Update agent accuracy
+            self.meta_agent.update_accuracy(api_result)
 
             if bot_won: self.total_wins += 1
             else: self.total_losses += 1
 
-            # LEVEL STATE MACHINE
+            # LEVEL STATE
             bet_amount, bet_type = self.get_current_bet()
-            
+
             if bot_won:
                 profit_amount = bet_amount * CONFIG['payout_rate']
                 self.total_profit += profit_amount
@@ -856,12 +733,11 @@ class V15Engine:
             else:
                 self.total_loss_amount += bet_amount
                 self.current_profit -= bet_amount
-            
+
             self.update_max_tracking()
-            
             action, old_level, old_state = self.on_result(bot_won)
-            
-            # ✅ WIN MESSAGE
+
+            # WIN MESSAGE
             if bot_won:
                 if action == "RESET":
                     notifications.append(
@@ -869,7 +745,6 @@ class V15Engine:
                         f"🎉 <b>BET2 WIN → Level 1 RESET</b>\n"
                         f"🔄 Level {old_level} → Level 1\n"
                         f"\n"
-                        f"━━━━━━━━━━━━━━━━━\n"
                         f"🏆 Max Level: {self.max_level_reached}\n"
                         f"📉 Max DD: {self.max_loss_amount:,.0f}\n"
                         f"💵 Profit: {self.current_profit:+,.0f}\n"
@@ -879,15 +754,12 @@ class V15Engine:
                     notifications.append(
                         f"🔥 <b>WIN ✅</b> (+{profit_amount:,.0f})\n"
                         f"🎯 Bet1 Win → Bet2 စောင့်\n"
-                        f"🎮 Level: {self.level} | State: BET2\n"
+                        f"🎮 Level: {self.level} | BET2\n"
                         f"\n"
-                        f"━━━━━━━━━━━━━━━━━\n"
-                        f"🏆 Max Level: {self.max_level_reached}\n"
-                        f"📉 Max DD: {self.max_loss_amount:,.0f}\n"
                         f"💵 Profit: {self.current_profit:+,.0f}\n"
                         f"📊 WR: {self.get_wr():.1f}%"
                     )
-            
+
             if action in ("BET1_LOSE", "BET2_LOSE"):
                 notifications.append(
                     f"📈 <b>LEVEL UP</b>\n"
@@ -896,7 +768,6 @@ class V15Engine:
                 )
 
             self.update_bot_step(bot_won)
-
             self.active_prediction = None
             self.last_state = None
             self.last_bot_step = None
@@ -906,12 +777,12 @@ class V15Engine:
                 notifications.append(reset_report)
 
         else:
-            self.update_model_accuracy(api_result)
+            self.meta_agent.update_accuracy(api_result)
 
         self.window.append(api_result)
         next_period_short = str(api_period_int + 1)[-3:]
 
-        # Signal
+        # Generate Signal
         if len(self.window) < CONFIG['min_data_before_signal']:
             notifications.append(
                 f"💖 Period {next_period_short}\n"
@@ -919,7 +790,7 @@ class V15Engine:
             )
         else:
             encoded = [FeatureEngineer.encode(r) for r in self.window]
-            pred, conf, mode, alpha = self.get_consensus()
+            pred, conf, mode, regime = self.get_consensus()
 
             if pred is None:
                 notifications.append(
@@ -927,45 +798,32 @@ class V15Engine:
                     f"⏭️ <b>SKIP</b> ({mode})"
                 )
             else:
-                entropy = FeatureEngineer.entropy(encoded, 20)
-                skip, reason = self.should_skip(encoded, alpha, entropy)
-                threshold = self.get_threshold()
+                self.active_prediction = pred
+                self.last_state = "active"
+                self.total_signals += 1
+                self.last_bot_step = self.bot_step
 
-                if skip:
-                    notifications.append(
-                        f"💖 Period {next_period_short}\n"
-                        f"⏭️ <b>SKIP</b> ({reason})"
-                    )
-                elif conf < threshold:
-                    notifications.append(
-                        f"💖 Period {next_period_short}\n"
-                        f"⏭️ <b>SKIP</b> (Conf {conf:.1%} < {threshold:.1%})"
-                    )
-                else:
-                    self.active_prediction = pred
-                    self.last_state = self.get_state_key()
-                    self.total_signals += 1
-                    self.record_pending_models()
-                    self.last_bot_step = self.bot_step
+                # Record agent predictions for accuracy
+                self.meta_agent.record_pending(encoded, self.window, regime)
 
-                    bet_amount, bet_type = self.get_current_bet()
+                bet_amount, bet_type = self.get_current_bet()
 
-                    notifications.append(
-                        f"💖 <b>Period {next_period_short}</b>\n"
-                        f"🎯 <b>SIGNAL → {pred.upper()}</b>\n"
-                        f"📊 Conf: <b>{conf:.1%}</b>\n"
-                        f"⚙️ {mode}\n"
-                        f"━━━━━━━━━━━━━━━━━\n"
-                        f"🤖 Bot Step: <b>{self.bot_step}x</b>\n"
-                        f"🎮 Level: <b>{self.level}</b> | {bet_type}\n"
-                        f"💰 Bet: <b>{bet_amount:,}</b>\n"
-                        f"━━━━━━━━━━━━━━━━━\n"
-                        f"🏆 Max Level: {self.max_level_reached}\n"
-                        f"📉 Max DD: {self.max_loss_amount:,.0f}\n"
-                        f"💵 Profit: {self.current_profit:+,.0f}\n"
-                        f"📊 WR: {self.get_wr():.1f}%\n"
-                        f"🎨 Last: {digit} ({COLOUR_MAP.get(digit, '?')})"
-                    )
+                notifications.append(
+                    f"💖 <b>Period {next_period_short}</b>\n"
+                    f"🎯 <b>SIGNAL → {pred.upper()}</b>\n"
+                    f"📊 Conf: <b>{conf:.1%}</b>\n"
+                    f"⚙️ {mode}\n"
+                    f"━━━━━━━━━━━━━━━━━\n"
+                    f"🤖 Bot Step: <b>{self.bot_step}x</b>\n"
+                    f"🎮 Level: <b>{self.level}</b> | {bet_type}\n"
+                    f"💰 Bet: <b>{bet_amount:,}</b>\n"
+                    f"━━━━━━━━━━━━━━━━━\n"
+                    f"🏆 Max Level: {self.max_level_reached}\n"
+                    f"📉 Max DD: {self.max_loss_amount:,.0f}\n"
+                    f"💵 Profit: {self.current_profit:+,.0f}\n"
+                    f"📊 WR: {self.get_wr():.1f}%\n"
+                    f"🎨 Last: {digit} ({COLOUR_MAP.get(digit, '?')})"
+                )
 
         for msg in notifications:
             self.send_telegram(msg)
@@ -976,8 +834,8 @@ class V15Engine:
 # 🌐 API POLLER
 # ==========================================
 def run_bot():
-    print("🚀 V15.7 — LR Fixed + Cold Removed", flush=True)
-    agent = V15Engine()
+    print("🚀 V16.0 — Multi-Agent Bot Started", flush=True)
+    agent = V16Engine()
     last_processed_period = None
     url = CONFIG['api_url']
     auth = LOTTERY_AUTH
@@ -1023,14 +881,14 @@ def run_bot():
 @app.route('/')
 def home():
     if not global_agent:
-        return "<h3>🚀 V15.7 starting...</h3>"
+        return "<h3>🚀 V16.0 starting...</h3>"
     a = global_agent
     bet_amount, bet_type = a.get_current_bet()
     return f"""
-    <h2>🚀 V15.7 — LR Fixed + Cold Removed</h2>
+    <h2>🚀 V16.0 — Multi-Agent Bot</h2>
+    <p><b>🎯 Regime:</b> {a.current_regime}</p>
     <p><b>🤖 Bot Step:</b> {a.bot_step}x</p>
-    <p><b>🎮 Level:</b> {a.level}</p>
-    <p><b>📊 State:</b> {a.level_state}</p>
+    <p><b>🎮 Level:</b> {a.level} | {a.level_state}</p>
     <p><b>💰 Current Bet:</b> {bet_amount:,} ({bet_type})</p>
     <p><b>🏆 Max Level:</b> {a.max_level_reached}</p>
     <p><b>📉 Max DD:</b> {a.max_loss_amount:+,.0f}</p>
@@ -1043,7 +901,8 @@ def stats():
         a = global_agent
         bet_amount, bet_type = a.get_current_bet()
         return {
-            "version": "V15.7",
+            "version": "V16.0",
+            "regime": a.current_regime,
             "bot_step": a.bot_step,
             "level": a.level,
             "level_state": a.level_state,
@@ -1056,22 +915,20 @@ def stats():
             "wins": a.total_wins,
             "losses": a.total_losses,
             "win_rate": f"{a.get_wr():.2f}%",
-            "total_profit": round(a.total_profit, 2),
-            "total_loss": round(a.total_loss_amount, 2),
             "net_profit": round(a.current_profit, 2),
             "max_loss": round(a.max_loss_amount, 2),
         }
     return {"status": "initializing"}
 
-@app.route('/model_stats')
-def model_stats():
+@app.route('/agent_stats')
+def agent_stats():
     if global_agent:
         a = global_agent
         result = {}
-        for name, acc_deque in a.model_acc.items():
+        for name, acc_deque in a.meta_agent.agent_acc.items():
             if len(acc_deque) >= 5:
                 acc = sum(acc_deque) / len(acc_deque)
-                weight = a.model_weights.get(name, 1.0)
+                weight = a.meta_agent.agent_weights.get(name, 1.0)
                 result[name] = f"{acc:.1%} (n={len(acc_deque)}, w={weight:.2f})"
             else:
                 result[name] = f"warming ({len(acc_deque)})"
@@ -1080,7 +937,7 @@ def model_stats():
 
 @app.route('/health')
 def health():
-    return {"status": "ok", "version": "V15.7"}
+    return {"status": "ok", "version": "V16.0"}
 
 
 # ==========================================
