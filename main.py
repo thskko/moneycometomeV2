@@ -1,13 +1,11 @@
 """
-🚀 V15.6 — Level 1-30+ State Machine
+🚀 V15.7 — Fixed Logistic Regression + Cold Filter Removed
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Rules:
-  1. Level N: WAITING_BET1 / WAITING_BET2
-  2. Bet1 Lose → Level N+1 (WAITING_BET1)
-  3. Bet1 Win → Level N (WAITING_BET2)
-  4. Bet2 Lose → Level N+1 (WAITING_BET1)
-  5. Bet2 Win → Level 1 Reset 🎉
-  6. Bot Step → Signal ထုတ်ဖို့ပဲ (Bet Style မထိ)
+Fixes:
+  1. LR Error: 'list' object has no attribute 'shape'  → FIXED
+  2. Cold Streak Deadlock (30+ min skip)                → REMOVED
+  3. Recent results window 50 → 100
+  4. Better error logging
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
@@ -23,9 +21,9 @@ from flask import Flask
 # ==========================================
 # 🔑 CREDENTIALS
 # ==========================================
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8913070806:AAF3rP0zKJtofE-5KVesqcdoHzn7Go0avho")
-CHAT_ID = os.environ.get("CHAT_ID", "-1004402480797")
-LOTTERY_AUTH = os.environ.get("LOTTERY_AUTH", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOiIxNzg3OTgxNTA5IiwibmJmIjoiMTc4Nzk4MTUwOSIsImV4cCI6IjE3ODc5ODMzMDkiLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL2V4cGlyYXRpb24iOiI4LzI5LzIwMjYgMTI6MzE2NDkgUE0iLCJodHRwOi8vc2NoZW1hcy5taWNyb3NvZnQuY29tL3dzLzIwMDgvMDYvaWRlbnRpdHkvY2xhaW1zL3JvbGUiOiJBY2Nlc3NfVG9rZW4iLCJVc2VySWQiOiIxMDEyMjEzIiwiVXNlck5hbWUiOiI5NTk3NDA5MzkzNzAiLCJVc2VyUGhvdG8iOiI5IiwiTmlja05hbWUiOiJUaGV0R3lpIiwiQW1vdW50IjoiODcuMzAiLCJJbnRlZ3JhbCI6IjAiLCJsb2dpbk1hcmsiOiJINSIsImxvZ2luVGltZSI6IjgvMjkvMjAyNiAxMjowMTo0OSBQTSIsImxvZ2luSVBBZGRyZXNzIjoiNDUuNDEuMTA0LjI0MCIsImRiTnVtYmVyIjoiMCIsIklzdmFsaWRhdG9yIjoiMCIsIktleUNvZGUiOiIzMjMzMiIsImRva2VuVHlwZSI6IjJBY2Nlc3NfVG9rZW4iLCJob25lVHlpZSI6IjAiLCJVc2VyVHlwZSI6IjAiLCJVc2VyTmFtZ2UiOiIuIiwiaXNzIjoiand0SXNzdWVyIiwiYXVkIjoibG90dGVyeVRpY2tldCJ9.ZL0Y9gexUTCsKwWeZhCLAAw8AABEYJt0GnIzIviMG4g")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
+CHAT_ID = os.environ.get("CHAT_ID", "")
+LOTTERY_AUTH = os.environ.get("LOTTERY_AUTH", "")
 
 COLOUR_MAP = {
     0: "Violet+Red", 1: "Green", 2: "Red", 3: "Green", 4: "Red",
@@ -50,14 +48,14 @@ CONFIG = {
     "lr_lr": 0.008,
     "lr_epochs": 3,
     "adaptive_weight_alpha": 0.25,
-    "rolling_accuracy_window": 50,
+    "rolling_accuracy_window": 100,
     "api_url": "https://6lotteryapi.com/api/webapi/GetNoaverageEmerdList",
     "payout_rate": 0.96,
     "profit_reset_threshold": 100000,
 }
 
 # ==========================================
-# 📊 LEVEL TABLE (1-30) + Fibonacci 31+
+# 📊 LEVEL TABLE
 # ==========================================
 LEVEL_TABLE = {
     1:  {"bet1": 1000,    "bet2": 2000},
@@ -242,38 +240,73 @@ class FeatureEngineer:
 
 
 # ==========================================
-# 🤖 LOGISTIC REGRESSION
+# 🤖 LOGISTIC REGRESSION (FIXED)
 # ==========================================
 class LogisticRegression:
     def __init__(self, input_size, lr=0.008):
         self.lr = lr
+        self.input_size = input_size
         scale = math.sqrt(2.0 / input_size)
         self.W = np.random.randn(input_size, 1) * scale
         self.b = np.zeros((1, 1))
         self.loss = 0.0
 
-    def sigmoid(self, z): return 1.0 / (1.0 + np.exp(-np.clip(z, -500, 500)))
+    def sigmoid(self, z): 
+        return 1.0 / (1.0 + np.exp(-np.clip(z, -500, 500)))
 
-    def forward(self, X): return self.sigmoid(np.dot(X, self.W) + self.b)
+    def forward(self, X): 
+        return self.sigmoid(np.dot(X, self.W) + self.b)
 
     def train(self, X, y, epochs=3):
-        X = np.array(X).reshape(-1, X.shape[-1])
-        y = np.array(y).reshape(-1, 1)
-        for _ in range(epochs):
-            preds = self.forward(X)
-            loss = -np.mean(y * np.log(preds + 1e-8) + (1 - y) * np.log(1 - preds + 1e-8))
-            self.loss = loss
-            m = X.shape[0]
-            error = preds - y
-            self.W -= self.lr * (np.dot(X.T, error) / m)
-            self.b -= self.lr * (np.sum(error, axis=0, keepdims=True) / m)
-        return self.loss
+        """✅ FIXED: List → np.array အရင် ပြောင်း"""
+        try:
+            # ✅ List ကို np.array အရင် ပြောင်း
+            X = np.array(X, dtype=np.float64)
+            y = np.array(y, dtype=np.float64)
+            
+            # ✅ ndim စစ်
+            if X.ndim == 1:
+                X = X.reshape(1, -1)
+            if X.ndim != 2:
+                return self.loss  # Skip bad data
+            if y.ndim == 1:
+                y = y.reshape(-1, 1)
+            
+            # ✅ Shape စစ်
+            if X.shape[1] != self.input_size:
+                return self.loss  # Skip wrong size
+            
+            for _ in range(epochs):
+                preds = self.forward(X)
+                loss = -np.mean(y * np.log(preds + 1e-8) + (1 - y) * np.log(1 - preds + 1e-8))
+                self.loss = float(loss)
+                m = X.shape[0]
+                if m == 0:
+                    return self.loss
+                error = preds - y
+                self.W -= self.lr * (np.dot(X.T, error) / m)
+                self.b -= self.lr * (np.sum(error, axis=0, keepdims=True) / m)
+            return self.loss
+        except Exception as e:
+            print(f"LR Train Error: {e}", flush=True)
+            return self.loss
 
-    def predict(self, X): return self.forward(np.array(X).reshape(1, -1))[0][0]
+    def predict(self, X): 
+        """✅ FIXED: Shape စစ်"""
+        try:
+            X = np.array(X, dtype=np.float64)
+            if X.ndim == 1:
+                X = X.reshape(1, -1)
+            if X.shape[1] != self.input_size:
+                return 0.5  # Default
+            return float(self.forward(X)[0][0])
+        except Exception as e:
+            print(f"LR Predict Error: {e}", flush=True)
+            return 0.5
 
 
 # ==========================================
-# 🎯 V15.6 ENGINE — State Machine
+# 🎯 V15.7 ENGINE
 # ==========================================
 class V15Engine:
     def __init__(self):
@@ -291,16 +324,16 @@ class V15Engine:
         # Signal Bot Step
         self.bot_step = 1
         
-        # 🆕 Level State Machine
+        # Level State Machine
         self.level = 1
-        self.level_state = "WAITING_BET1"  # WAITING_BET1 or WAITING_BET2
+        self.level_state = "WAITING_BET1"
         self.current_bet = 0
         
         # Stats
         self.total_signals = 0
         self.total_wins = 0
         self.total_losses = 0
-        self.recent_results = deque(maxlen=50)
+        self.recent_results = deque(maxlen=100)  # ✅ 50 → 100
         self.total_profit = 0.0
         self.total_loss_amount = 0.0
         self.current_profit = 0.0
@@ -367,7 +400,6 @@ class V15Engine:
     # 💰 LEVEL STATE MACHINE
     # ==========================================
     def get_current_bet(self):
-        """လက်ရှိ Level State အရ Bet ယူ"""
         info = get_level_bet(self.level)
         if self.level_state == "WAITING_BET1":
             return info["bet1"], "BET1"
@@ -375,35 +407,26 @@ class V15Engine:
             return info["bet2"], "BET2"
 
     def on_result(self, won):
-        """
-        Result ရရင် Level State Update
-        Returns: (action, old_level, old_state)
-        """
         old_level = self.level
         old_state = self.level_state
         
         if self.level_state == "WAITING_BET1":
             if won:
-                # ✅ Bet1 Win → Bet2 စောင့်
                 self.level_state = "WAITING_BET2"
                 return "BET1_WIN", old_level, old_state
             else:
-                # ❌ Bet1 Lose → Level +1
                 self.level += 1
                 self.level_state = "WAITING_BET1"
                 if self.level > self.max_level_reached:
                     self.max_level_reached = self.level
                 return "BET1_LOSE", old_level, old_state
-        
-        else:  # WAITING_BET2
+        else:
             if won:
-                # 🎉 Bet2 Win → Level 1 Reset
                 self.level = 1
                 self.level_state = "WAITING_BET1"
                 self.cycles_completed += 1
                 return "RESET", old_level, old_state
             else:
-                # ❌ Bet2 Lose → Level +1
                 self.level += 1
                 self.level_state = "WAITING_BET1"
                 if self.level > self.max_level_reached:
@@ -411,7 +434,6 @@ class V15Engine:
                 return "BET2_LOSE", old_level, old_state
 
     def update_bot_step(self, bot_won):
-        """Signal Bot Step: Win → 1x Reset, Lose → +1"""
         if bot_won:
             self.bot_step = 1
         else:
@@ -477,7 +499,7 @@ class V15Engine:
         self.epsilon = max(CONFIG['q_min_epsilon'], self.epsilon * CONFIG['q_epsilon_decay'])
 
     # ==========================================
-    # 13 MODELS (Same as V15.5)
+    # 13 MODELS
     # ==========================================
     def markov_order2(self, encoded):
         if len(encoded) < 10: return None, 0
@@ -635,16 +657,29 @@ class V15Engine:
         return self.get_q_action(state_key), 0.60
 
     def logreg_predict(self, encoded):
+        """✅ FIXED: List → np.array"""
         try:
             vec = FeatureEngineer.to_vector(encoded)
+            
             if len(self.lr_train_X) >= 20:
-                X = list(self.lr_train_X)[-50:]
-                y = list(self.lr_train_y)[-50:]
-                self.lr_model.train(X, y, epochs=CONFIG['lr_epochs'])
+                X = np.array(list(self.lr_train_X)[-50:], dtype=np.float64)
+                y = np.array(list(self.lr_train_y)[-50:], dtype=np.float64)
+                
+                # ✅ ndim စစ်
+                if X.ndim == 1:
+                    X = X.reshape(-1, 1)
+                if y.ndim == 1:
+                    y = y.reshape(-1, 1)
+                
+                # ✅ Shape စစ်
+                if X.shape[1] == 16:
+                    self.lr_model.train(X, y, epochs=CONFIG['lr_epochs'])
+            
+            # ✅ Predict
             out = self.lr_model.predict(vec)
             return ("Big" if out > 0.5 else "Small"), max(out, 1 - out)
         except Exception as e:
-            print(f"LR Error: {e}", flush=True)
+            print(f"LR Predict Error: {e}", flush=True)
             return None, 0
 
     def regime_aware_predict(self, encoded):
@@ -738,12 +773,15 @@ class V15Engine:
         else: return base + 0.04
 
     def should_skip(self, encoded, alpha, entropy):
+        """✅ FIXED: Cold Filter ဖျက်"""
         reasons = []
-        if entropy > 0.99: reasons.append("Max Entropy")
-        if len(self.recent_results) >= 15:
-            recent_wr = sum(self.recent_results) / len(self.recent_results)
-            if recent_wr < 0.35:
-                reasons.append(f"Cold {recent_wr:.0%}")
+        if entropy > 0.99: 
+            reasons.append("Max Entropy")
+        # ❌ Cold Filter ဖျက် — Deadlock ဖြတ်
+        # if len(self.recent_results) >= 15:
+        #     recent_wr = sum(self.recent_results) / len(self.recent_results)
+        #     if recent_wr < 0.35:
+        #         reasons.append(f"Cold {recent_wr:.0%}")
         return (len(reasons) > 0), ", ".join(reasons)
 
     def update_model_accuracy(self, actual):
@@ -790,9 +828,7 @@ class V15Engine:
             self.last_digit = digit
             self.digit_history.append(digit)
 
-        # ==========================================
-        # Verify Previous Prediction
-        # ==========================================
+        # Verify Previous
         if self.active_prediction is not None and self.last_state is not None:
             bot_won = (self.active_prediction == api_result)
             self.recent_results.append(1 if bot_won else 0)
@@ -810,13 +846,9 @@ class V15Engine:
             if bot_won: self.total_wins += 1
             else: self.total_losses += 1
 
-            # ==========================================
-            # 🎯 LEVEL STATE MACHINE
-            # ==========================================
-            # လက်ရှိ bet ကို ယူ
+            # LEVEL STATE MACHINE
             bet_amount, bet_type = self.get_current_bet()
             
-            # Profit/Loss tracking
             if bot_won:
                 profit_amount = bet_amount * CONFIG['payout_rate']
                 self.total_profit += profit_amount
@@ -827,7 +859,6 @@ class V15Engine:
             
             self.update_max_tracking()
             
-            # Level State Update
             action, old_level, old_state = self.on_result(bot_won)
             
             # ✅ WIN MESSAGE
@@ -857,7 +888,6 @@ class V15Engine:
                         f"📊 WR: {self.get_wr():.1f}%"
                     )
             
-            # Level Up message
             if action in ("BET1_LOSE", "BET2_LOSE"):
                 notifications.append(
                     f"📈 <b>LEVEL UP</b>\n"
@@ -865,14 +895,12 @@ class V15Engine:
                     f"💰 Next Bet1: {get_level_bet(self.level)['bet1']:,}"
                 )
 
-            # Update Bot Step
             self.update_bot_step(bot_won)
 
             self.active_prediction = None
             self.last_state = None
             self.last_bot_step = None
 
-            # PROFIT RESET CHECK
             reset_report = self.check_profit_reset()
             if reset_report:
                 notifications.append(reset_report)
@@ -883,9 +911,7 @@ class V15Engine:
         self.window.append(api_result)
         next_period_short = str(api_period_int + 1)[-3:]
 
-        # ==========================================
-        # Generate Signal
-        # ==========================================
+        # Signal
         if len(self.window) < CONFIG['min_data_before_signal']:
             notifications.append(
                 f"💖 Period {next_period_short}\n"
@@ -916,14 +942,12 @@ class V15Engine:
                         f"⏭️ <b>SKIP</b> (Conf {conf:.1%} < {threshold:.1%})"
                     )
                 else:
-                    # ✅ SIGNAL
                     self.active_prediction = pred
                     self.last_state = self.get_state_key()
                     self.total_signals += 1
                     self.record_pending_models()
                     self.last_bot_step = self.bot_step
 
-                    # လက်ရှိ Bet
                     bet_amount, bet_type = self.get_current_bet()
 
                     notifications.append(
@@ -952,7 +976,7 @@ class V15Engine:
 # 🌐 API POLLER
 # ==========================================
 def run_bot():
-    print("🚀 V15.6 — Level State Machine Started", flush=True)
+    print("🚀 V15.7 — LR Fixed + Cold Removed", flush=True)
     agent = V15Engine()
     last_processed_period = None
     url = CONFIG['api_url']
@@ -999,11 +1023,11 @@ def run_bot():
 @app.route('/')
 def home():
     if not global_agent:
-        return "<h3>🚀 V15.6 starting...</h3>"
+        return "<h3>🚀 V15.7 starting...</h3>"
     a = global_agent
     bet_amount, bet_type = a.get_current_bet()
     return f"""
-    <h2>🚀 V15.6 — Level State Machine</h2>
+    <h2>🚀 V15.7 — LR Fixed + Cold Removed</h2>
     <p><b>🤖 Bot Step:</b> {a.bot_step}x</p>
     <p><b>🎮 Level:</b> {a.level}</p>
     <p><b>📊 State:</b> {a.level_state}</p>
@@ -1019,7 +1043,7 @@ def stats():
         a = global_agent
         bet_amount, bet_type = a.get_current_bet()
         return {
-            "version": "V15.6",
+            "version": "V15.7",
             "bot_step": a.bot_step,
             "level": a.level,
             "level_state": a.level_state,
@@ -1056,7 +1080,7 @@ def model_stats():
 
 @app.route('/health')
 def health():
-    return {"status": "ok", "version": "V15.6"}
+    return {"status": "ok", "version": "V15.7"}
 
 
 # ==========================================
