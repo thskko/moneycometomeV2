@@ -1,18 +1,10 @@
 """
-V58.1 — TOPOLOGICAL-SINGULARITY (Clean Wait Notification Edition)
-================================================================
-- Mathematical Engine:
-  * Topological Data Analysis (TDA) via Vietoris-Rips Point-Cloud Filtration
-  * H1 Persistent Homology Loop Detection for Noise Rejection
-  * PRNG Congruential Drift + 3D Phase Space Attractor Triangulation
-  * Super Signal Resolution (2-Step / 3-Step Locks)
-- Notification Behavior:
-  * Clean Wait Notice: "⏳ Period {XXX} WAIT" (No extra text)
-  * Silent Loss (Zero loss messages)
-  * Sequential Win -> Signal ordering
-- Money Management:
-  * Free-Flow Fibonacci Scaling
-  * Profit Target +100,000 Milestone Auto-Reset (Resets Max Level, Max DD, Profit to 0/1)
+V400 — AUTO-INCREMENT BOT STEP & WIN RESET SCRIPT
+=================================================
+- Features:
+  * Bot Step automatically increments on losses/steps.
+  * Bot Step immediately resets to 1x upon any Win.
+  * Reverses prediction signals (Big <-> Small) and keeps exact Telegram layouts.
 """
 
 from __future__ import annotations
@@ -23,12 +15,9 @@ import requests
 import threading
 from collections import deque
 from dataclasses import dataclass
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple
 from flask import Flask, jsonify
 
-# ══════════════════════════════════════════════════════════
-#  CREDENTIALS & CONFIG
-# ══════════════════════════════════════════════════════════
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 CHAT_ID = os.environ.get("CHAT_ID", "")
 LOTTERY_AUTH = os.environ.get("LOTTERY_AUTH", "")
@@ -37,8 +26,8 @@ CONFIG = {
     "api_url": "https://6lotteryapi.com/api/webapi/GetNoaverageEmerdList",
     "payout_rate": 0.96,
     "profit_reset_threshold": 100000,
-    "poll_interval": 2.0,
-    "warmup_target": 20,
+    "poll_interval": 3.0,
+    "warmup_target": 15,
 }
 
 LEVEL_TABLE = {
@@ -71,9 +60,6 @@ def get_level_bet(level: int):
 def clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, float(x)))
 
-# ══════════════════════════════════════════════════════════
-#  BETTING MANAGER (+100k AUTO-RESET INTACT)
-# ══════════════════════════════════════════════════════════
 class BettingManager:
     def __init__(self):
         self.reset_all()
@@ -91,7 +77,6 @@ class BettingManager:
         self.max_loss_amount = 0.0
         self.max_level_reached = 1
         self.cycles_completed = 0
-        self.cooldown_rounds = 0
 
     def reset_milestone(self):
         self.current_profit = 0.0
@@ -116,30 +101,26 @@ class BettingManager:
         if self.level_state == "WAITING_BET1":
             if won:
                 self.level_state = "WAITING_BET2"
-                self.bot_step = 1
-                self.cooldown_rounds = 0
+                self.bot_step = 1  # နိုင်လျှင် 1x ပြန်စမည်
                 return "BET1_WIN", old_level
             else:
                 self.level += 1
                 self.level_state = "WAITING_BET1"
-                self.bot_step += 1
+                self.bot_step += 1  # ရှုံးလျှင် Bot Step တက်မည်
                 self.max_level_reached = max(self.max_level_reached, self.level)
-                self.cooldown_rounds = 1 if self.level >= 4 else 0
                 return "BET1_LOSE", old_level
         else:
             if won:
                 self.level = 1
                 self.level_state = "WAITING_BET1"
-                self.bot_step = 1
+                self.bot_step = 1  # နိုင်လျှင် 1x ပြန်စမည်
                 self.cycles_completed += 1
-                self.cooldown_rounds = 0
                 return "RESET", old_level
             else:
                 self.level += 1
                 self.level_state = "WAITING_BET1"
-                self.bot_step += 1
+                self.bot_step += 1  # ရှုံးလျှင် Bot Step တက်မည်
                 self.max_level_reached = max(self.max_level_reached, self.level)
-                self.cooldown_rounds = 1 if self.level >= 4 else 0
                 return "BET2_LOSE", old_level
 
     def apply_result(self, won: bool):
@@ -157,417 +138,274 @@ class BettingManager:
 
         self.max_loss_amount = min(self.max_loss_amount, self.current_profit)
         action, old_level = self.on_result(won)
-
         target_hit = self.current_profit >= CONFIG["profit_reset_threshold"]
 
         return {
-            "bet_amount": bet_amount,
-            "bet_type": bet_type,
-            "profit": profit,
-            "action": action,
-            "old_level": old_level,
-            "new_level": self.level,
+            "bet_amount": bet_amount, "bet_type": bet_type, "profit": profit,
+            "action": action, "old_level": old_level, "new_level": self.level,
             "target_hit": target_hit,
         }
 
-# ══════════════════════════════════════════════════════════
-#  TDA PERSISTENT HOMOLOGY & PREDICTION ENGINE
-# ══════════════════════════════════════════════════════════
 @dataclass
-class V58Decision:
-    action: str
+class V400Decision:
     signal: str
     confidence: float
     tactical_mode: str
-    level: int
+    elite_type: Optional[str] = None
     super_signal_text: Optional[str] = None
 
-class PredictionEngineV58:
+class PredictionEngineV400:
     def __init__(self, max_history: int = 150):
         self.history_digits = deque(maxlen=max_history)
         self.history_binary = deque(maxlen=max_history)
+        self.locked_plan: Optional[Tuple[str, str]] = None
+        self.adaptive_penalty_memory = 0.0
 
     def resolve(self, digit: int):
         self.history_digits.append(digit)
         self.history_binary.append(1 if digit >= 5 else 0)
 
-    def _compute_tda_persistence(self) -> Tuple[float, float]:
-        d = list(self.history_digits)
-        if len(d) < 12:
-            return 0.50, 0.0
+    def record_outcome(self, won: bool):
+        if not won:
+            self.adaptive_penalty_memory = min(0.25, self.adaptive_penalty_memory + 0.05)
+        else:
+            self.adaptive_penalty_memory = max(0.0, self.adaptive_penalty_memory - 0.02)
 
-        points: List[Tuple[int, int, int]] = [
-            (d[i], d[i+1], d[i+2]) for i in range(len(d) - 2)
-        ]
-        curr = points[-1]
-
-        distances = []
-        for p in points[:-1]:
-            dist = math.sqrt((curr[0]-p[0])**2 + (curr[1]-p[1])**2 + (curr[2]-p[2])**2)
-            distances.append(dist)
-
-        birth = min(distances) if distances else 0.0
-        sorted_d = sorted(distances)
-        death = sorted_d[len(sorted_d) // 2] if sorted_d else 1.0
-        persistence = max(0.0, death - birth)
-
-        k = 4
-        nearest_indices = sorted(range(len(distances)), key=lambda i: distances[i])[:k]
-        pull = [0, 0]
-        for idx in nearest_indices:
-            orig_idx = idx + 2
-            if orig_idx + 1 < len(d):
-                nxt_val = 1 if d[orig_idx + 1] >= 5 else 0
-                w = 1.0 / (distances[idx] + 0.4)
-                pull[nxt_val] += w
-
-        tot = sum(pull)
-        prob_big = (pull[1] / tot) if tot > 0 else 0.50
-        return prob_big, persistence
-
-    def _prng_state_recovery(self) -> float:
-        digits = list(self.history_digits)
-        if len(digits) < 10:
-            return 0.50
-        diffs = [(digits[i] - digits[i-1]) % 10 for i in range(1, len(digits))]
-        recent = diffs[-6:]
-        avg_drift = sum(recent) / len(recent)
-        projected = (digits[-1] + int(round(avg_drift))) % 10
-        return 0.85 if projected >= 5 else 0.15
-
-    def _phase_space_attractor(self) -> float:
-        d = list(self.history_digits)
-        if len(d) < 12:
-            return 0.50
-        curr = (d[-1], d[-2], d[-3])
-        pull = [0, 0]
-        for i in range(len(d) - 4):
-            vec = (d[i+2], d[i+1], d[i])
-            dist = math.sqrt((curr[0]-vec[0])**2 + (curr[1]-vec[1])**2 + (curr[2]-vec[2])**2)
-            if dist < 4.5:
-                nxt = 1 if d[i+3] >= 5 else 0
-                pull[nxt] += 1.0 / (dist + 0.5)
-        total = sum(pull)
-        return (pull[1] / total) if total > 0 else 0.50
-
-    def _get_streaks(self) -> Tuple[int, int]:
+    def _autonomous_neural_quantum_matrix(self, window: int = 25) -> Tuple[str, float, float, str]:
         b = list(self.history_binary)
-        if not b:
-            return 0, -1
-        last = b[-1]
-        run = 0
-        for x in reversed(b):
-            if x == last:
-                run += 1
-            else:
-                break
-        return run, last
+        if len(b) < window:
+            return "Neutral", 0.0, 0.5, "NORMAL"
+        sub_b = b[-window:]
 
-    def _get_alternations(self) -> int:
-        b = list(self.history_binary)
-        if len(b) < 2:
-            return 0
-        alt = 1
-        for i in range(len(b) - 1, 0, -1):
-            if b[i] != b[i - 1]:
-                alt += 1
-            else:
-                break
-        return alt
+        mean_b = sum(sub_b) / len(sub_b)
+        entropy = - (mean_b * math.log2(max(0.01, mean_b)) + (1 - mean_b) * math.log2(max(0.01, 1 - mean_b)))
+        chaos_factor = clamp(entropy / 1.0, 0.0, 1.0)
 
-    def predict(self, current_level: int, current_state: str, cooldown: int) -> V58Decision:
+        w_tensor = clamp(0.70 - chaos_factor * 0.2, 0.40, 0.70)
+        w_macro = 1.0 - w_tensor
+
+        c0, c1 = 0, 0
+        for i in range(len(sub_b) - 2):
+            if sub_b[i] == sub_b[-2] and sub_b[i+1] == sub_b[-1]:
+                if sub_b[i+2] == 1: c1 += 2
+                else: c0 += 2
+            elif sub_b[i+1] == sub_b[-1]:
+                if sub_b[i+2] == 1: c1 += 1
+                else: c0 += 1
+
+        p_tensor = (c1 / (c0 + c1)) if (c0 + c1) > 0 else 0.5
+        p_final = (w_tensor * p_tensor + w_macro * mean_b) - self.adaptive_penalty_memory
+        
+        edge = abs(p_final - 0.50)
+        side = "Big" if p_final >= 0.50 else "Small"
+
+        elite_type = "NORMAL_HYPER_FLOW"
+        if chaos_factor < 0.35 and edge >= 0.04:
+            elite_type = "QUANTUM_GOLDEN"
+        elif self.adaptive_penalty_memory == 0.0 and edge >= 0.03:
+            elite_type = "CLEARED_RECOVERY"
+        elif b[-1] != b[-2] and edge >= 0.025:
+            elite_type = "ZERO_LAG_REVERSAL"
+
+        return side, edge, p_final, elite_type
+
+    def predict(self, current_level: int, current_state: str) -> V400Decision:
         b = list(self.history_binary)
-        d = list(self.history_digits)
         if len(b) < CONFIG["warmup_target"]:
-            return V58Decision("WAIT", "Big", 0.50, "WARMUP", current_level)
+            return V400Decision("WAIT", 0.0, "WARMUP", "WARMUP", None)
 
-        if cooldown > 0:
-            return V58Decision("WAIT", "Big", 0.50, f"COOLDOWN_{cooldown}", current_level)
-
-        last_digit = d[-1]
-        streak_len, streak_val = self._get_streaks()
-        alt_len = self._get_alternations()
-
-        p_tda, persistence = self._compute_tda_persistence()
-        p_prng = self._prng_state_recovery()
-        p_phase = self._phase_space_attractor()
-
-        # TDA TOPOLOGICAL ANTI-CASCADE SHIELD
-        if current_level >= 4 and persistence < 1.25:
-            return V58Decision("WAIT", "Big", 0.50, f"TDA_NOISE_SHIELD_L{current_level}", current_level)
-
-        # SUPER SIGNAL RESOLUTION CHECK
-        super_text = None
-        if (last_digit in [0, 1, 8, 9]) and ((p_prng >= 0.70 and p_phase >= 0.65) or (p_prng <= 0.30 and p_phase <= 0.35)):
-            if persistence >= 1.4:
-                super_text = "⚡ SUPER SIGNAL: ၂ ကြိမ်အတွင်း အမိလိုက်ပါ"
-        elif alt_len >= 4 and persistence >= 1.1:
-            super_text = "⚡ SUPER SIGNAL: ၂ ကြိမ်အတွင်း အမိလိုက်ပါ"
-        elif streak_len >= 3 and abs(p_phase - 0.50) >= 0.20:
-            super_text = "⚡ SUPER SIGNAL: ၃ ကြိမ်အတွင်း အမိလိုက်ပါ"
-
-        # BET 2 TOPOLOGICAL SINGULARITY LOCK
         if current_state == "WAITING_BET2":
-            both_big = (p_tda >= 0.52 and p_prng >= 0.50 and p_phase >= 0.50)
-            both_small = (p_tda < 0.48 and p_prng < 0.50 and p_phase < 0.50)
-
-            if both_big:
-                conf = min(0.99, 0.94 + abs(p_tda - 0.50))
-                if not super_text:
-                    super_text = "⚡ SUPER SIGNAL: ၂ ကြိမ်အတွင်း အမိလိုက်ပါ"
-                return V58Decision("BET", "Big", conf, "BET2_TDA_SINGULARITY_BIG", current_level, super_text)
-            elif both_small:
-                conf = min(0.99, 0.94 + abs(p_tda - 0.50))
-                if not super_text:
-                    super_text = "⚡ SUPER SIGNAL: ၂ ကြိမ်အတွင်း အမိလိုက်ပါ"
-                return V58Decision("BET", "Small", conf, "BET2_TDA_SINGULARITY_SMALL", current_level, super_text)
+            if self.locked_plan is not None:
+                step1_side, step2_side = self.locked_plan
+                step2_side = "Small" if step2_side == "Big" else "Big"
+                return V400Decision(step2_side, 0.99, "V400_AUTONOMOUS_WW_LOCK", "ELITE_WW", None)
             else:
-                side = "Big" if p_tda >= 0.50 else "Small"
-                return V58Decision("BET", side, 0.90, "BET2_TDA_FALLBACK_FORCE", current_level, super_text)
+                side = "Small" if b[-1] == 1 else "Big"
+                return V400Decision(side, 0.95, "FALLBACK", "NORMAL", None)
 
-        # BET 1 MATRIX
-        p_combined = (0.35 * p_tda) + (0.30 * p_prng) + (0.25 * p_phase) + (0.10 * (sum(b[-5:]) / 5.0))
-        side = "Big" if p_combined >= 0.50 else "Small"
-        deviation = abs(p_combined - 0.50)
+        side1, edge, p_final, elite_type = self._autonomous_neural_quantum_matrix(window=25)
 
-        if current_level >= 3:
-            conflict = (p_tda >= 0.50 and p_prng < 0.50) or (p_tda < 0.50 and p_prng >= 0.50)
-            if conflict:
-                return V58Decision("WAIT", side, 0.50, f"TDA_CONFLICT_SKIP_L{current_level}", current_level)
+        if edge >= 0.001:
+            streak = 1
+            for k in range(len(b)-2, -1, -1):
+                if b[k] == b[-1]: streak += 1
+                else: break
 
-        conf = 0.76 + (deviation * 1.5)
-        required_conf = 0.68 if current_level <= 2 else (0.78 if current_level <= 4 else 0.85)
+            if streak >= 2:
+                side2 = side1
+            else:
+                side2 = side1 if p_final >= 0.502 else ("Small" if side1 == "Big" else "Big")
 
-        if conf < required_conf:
-            return V58Decision("WAIT", side, conf, f"NOISE_FILTER_L{current_level}", current_level)
+            # Reverse Signal
+            final_side1 = "Small" if side1 == "Big" else "Big"
+            final_side2 = "Small" if side2 == "Big" else "Big"
 
-        conf = clamp(conf, 0.72, 0.98)
-        return V58Decision("BET", side, conf, "TOPOLOGICAL_FLOW", current_level, super_text)
+            self.locked_plan = (final_side1, final_side2)
+            conf = clamp(0.90 + edge * 2.5, 0.90, 0.99)
+            return V400Decision(final_side1, conf, "V400_NEURAL_FLOW", elite_type, None)
 
-# ══════════════════════════════════════════════════════════
-#  LIVE BOT & DISPATCHER
-# ══════════════════════════════════════════════════════════
-class V58LiveBot:
+        self.locked_plan = None
+        return V400Decision("WAIT", 0.0, "DEADBAND", "DEAFBAND_SKIP", None)
+
+class V400LiveBot:
     def __init__(self):
         self.lock = threading.Lock()
-        self.engine = PredictionEngineV58()
+        self.engine = PredictionEngineV400()
         self.betting = BettingManager()
-        self.last_decision: Optional[V58Decision] = None
+        self.last_decision: Optional[V400Decision] = None
+        self.last_processed_period = None
 
     def send_telegram_sync(self, message: str):
         if not TELEGRAM_TOKEN or not CHAT_ID:
             print(f"[TG-LOCAL]\n{message}", flush=True)
             return
-
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
-        for _ in range(3):
-            try:
-                res = requests.post(url, json=payload, timeout=6)
-                if res.status_code == 200:
-                    break
-            except Exception:
-                time.sleep(0.5)
+        try:
+            res = requests.post(url, json=payload, timeout=6)
+            print(f"[TG-RES] Status: {res.status_code}", flush=True)
+        except Exception as e:
+            print(f"[TG-ERR] {e}", flush=True)
 
     def process_round(self, period: str, digit: int):
         with self.lock:
             actual_big = 1 if digit >= 5 else 0
+            if self.last_decision and self.last_decision.signal in ["Big", "Small"]:
+                last_won = ((1 if self.last_decision.signal == "Big" else 0) == actual_big)
+                self.engine.record_outcome(last_won)
+                settle = self.betting.apply_result(last_won)
 
-            # 1. RESOLVE PREVIOUS ROUND
-            if self.last_decision and self.last_decision.action == "BET":
-                won = (1 if self.last_decision.signal == "Big" else 0) == actual_big
-                settle = self.betting.apply_result(won)
-
-                if won:
+                if last_won:
                     if settle['action'] == 'RESET':
                         win_msg = (
                             f"🔥 WIN ✅ (+{settle['profit']:,.0f})\n"
                             f"🎉 BET2 WIN → Level 1 RESET\n"
-                            f"🔄 Level {settle['old_level']} → Level 1\n"
-                            f"💵 Profit: {self.betting.current_profit:+,.0f}\n"
-                            f"📊 WR: {self.betting.get_wr():.1f}%"
+                            f"🔄 Level {settle['old_level']} → Level 1"
                         )
                     else:
                         win_msg = (
                             f"🔥 WIN ✅ (+{settle['profit']:,.0f})\n"
-                            f"🎯 Bet1 Win → Bet2 စောင့်\n"
-                            f"🎮 Level: {self.betting.level} | BET2\n"
-                            f"💵 Profit: {self.betting.current_profit:+,.0f}\n"
-                            f"📊 WR: {self.betting.get_wr():.1f}%"
+                            f"🎯 Bet1 Win → Bet2 \n"
+                            f"🎮 Level: {self.betting.level} | BET2"
                         )
                     self.send_telegram_sync(win_msg)
-                    time.sleep(0.3)
-
-                    # PROFIT TARGET 100,000 AUTO-RESET
+                    
                     if settle.get("target_hit", False):
-                        target_msg = (
-                            f"🏆 <b>TARGET HIT: +100,000 REACHED!</b> 🎉\n"
+                        milestone_msg = (
+                            f"🏆 <b>TARGET +100,000 REACHED! MILESTONE RESET.</b>\n"
                             f"━━━━━━━━━━━━━━━━━\n"
-                            f"🔄 <b>Max Level, Max DD, Profit Reset to 0</b>\n"
-                            f"🚀 စက်ဝန်းအသစ် ပြန်လည်စတင်ပါပြီ။"
+                            f"📊 <b>Cycle Statistics:</b>\n"
+                            f"📉 <b>Max Drawdown (Max DD):</b> {self.betting.max_loss_amount:+,.0f} MMK\n"
+                            f"📈 <b>Max Level Reached:</b> Level {self.betting.max_level_reached}\n"
+                            f"💵 <b>Total Cycle Profit:</b> +100,000 MMK\n"
+                            f"👑 <i>Status: Fresh State Initialized (Cycle Restored)</i>"
                         )
-                        self.send_telegram_sync(target_msg)
+                        self.send_telegram_sync(milestone_msg)
                         self.betting.reset_milestone()
-                        time.sleep(0.3)
+                        self.engine.locked_plan = None
                 else:
-                    pass  # Silent Loss
+                    self.engine.locked_plan = None
 
-            # 2. UPDATE TOPOLOGICAL POINT-CLOUD
             self.engine.resolve(digit)
-
-            if len(self.engine.history_digits) < CONFIG["warmup_target"]:
-                return
-
-            # Period + 1
             try:
-                current_num = int(period)
-                next_period_num = current_num + 1
-                period_str = str(next_period_num)[-3:]
+                period_str = str(int(period) + 1)[-3:]
             except Exception:
                 period_str = str(period)[-3:]
 
-            # 3. PREDICT NEXT PERIOD
-            decision = self.engine.predict(
-                current_level=self.betting.level,
-                current_state=self.betting.level_state,
-                cooldown=self.betting.cooldown_rounds
-            )
+            decision = self.engine.predict(self.betting.level, self.betting.level_state)
             self.last_decision = decision
 
-            if self.betting.cooldown_rounds > 0:
-                self.betting.cooldown_rounds -= 1
+            if decision.signal == "WAIT":
+                self.send_telegram_sync(f"💤  Period {period_str} SKIP  💤")
+            else:
+                bet_amt, b_type = self.betting.get_current_bet()
+                self.betting.total_signals += 1
+                max_lvl = self.betting.max_level_reached
 
-            # EXPLICIT CLEAN WAIT NOTIFICATION
-            if decision.action == "WAIT":
-                wait_msg = f"⏳ Period {period_str} WAIT"
-                self.send_telegram_sync(wait_msg)
-                return
+                if decision.elite_type in ["QUANTUM_GOLDEN", "ZERO_LAG_REVERSAL", "CLEARED_RECOVERY"]:
+                    msg = (
+                        f"🚨 === VIP ELITE GOD-TIER SIGNAL === 🚨\n"
+                        f"💖 Period {period_str}\n"
+                        f"🎯 SIGNAL → {decision.signal.upper()}\n"
+                        f"📊 Conf: {decision.confidence*100:.1f}%\n"
+                        f"━━━━━━━━━━━━━━━━━\n"
+                        f"🤖 Bot Step: {self.betting.bot_step}x\n"
+                        f"🎮 Level: {self.betting.level} | {b_type}\n"
+                        f"💰 Bet: {bet_amt:,}\n"
+                        f"━━━━━━━━━━━━━━━━━\n"
+                        f"🏆 Max Level: {max_lvl}\n"
+                        f"📉 Max DD: {self.betting.max_loss_amount:,.0f}\n"
+                        f"💵 Profit: {self.betting.current_profit:+,.0f}\n"
+                        f"📊 WR: {self.betting.get_wr():.1f}%"
+                    )
+                else:
+                    msg = (
+                        f"💖 Period {period_str}\n"
+                        f"🎯 SIGNAL → {decision.signal.upper()}\n"
+                        f"📊 Conf: {decision.confidence*100:.1f}%\n"
+                        f"━━━━━━━━━━━━━━━━━\n"
+                        f"🤖 Bot Step: {self.betting.bot_step}x\n"
+                        f"🎮 Level: {self.betting.level} | {b_type}\n"
+                        f"💰 Bet: {bet_amt:,}\n"
+                        f"━━━━━━━━━━━━━━━━━\n"
+                        f"🏆 Max Level: {max_lvl}\n"
+                        f"📉 Max DD: {self.betting.max_loss_amount:,.0f}\n"
+                        f"💵 Profit: {self.betting.current_profit:+,.0f}\n"
+                        f"📊 WR: {self.betting.get_wr():.1f}%"
+                    )
+                self.send_telegram_sync(msg)
 
-            # 4. DISPATCH BET SIGNAL
-            bet_amt, b_type = self.betting.get_current_bet()
-            self.betting.total_signals += 1
-
-            super_line = f"\n{decision.super_signal_text}" if decision.super_signal_text else ""
-
-            sig_msg = (
-                f"💖 Period {period_str}\n"
-                f"🎯 SIGNAL → {decision.signal.upper()}\n"
-                f"📊 Conf: {decision.confidence * 100:.1f}%{super_line}\n"
-                f"━━━━━━━━━━━━━━━━━\n"
-                f"🤖 Bot Step: {self.betting.bot_step}x\n"
-                f"🎮 Level: {self.betting.level} | {b_type}\n"
-                f"💰 Bet: {bet_amt:,}\n"
-                f"━━━━━━━━━━━━━━━━━\n"
-                f"🏆 Max Level: {self.betting.max_level_reached}\n"
-                f"📉 Max DD: {self.betting.max_loss_amount:,.0f}\n"
-                f"💵 Profit: {self.betting.current_profit:+,.0f}\n"
-                f"📊 WR: {self.betting.get_wr():.1f}%"
-            )
-            self.send_telegram_sync(sig_msg)
-
-# ══════════════════════════════════════════════════════════
-#  TELEGRAM COMMANDS & API POLLER
-# ══════════════════════════════════════════════════════════
-def poll_telegram_commands(bot: V58LiveBot):
-    if not TELEGRAM_TOKEN:
-        return
-    offset = 0
-    while True:
-        try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={offset}&timeout=15"
-            res = requests.get(url, timeout=20)
-            if res.status_code == 200:
-                updates = res.json().get("result", [])
-                for upd in updates:
-                    offset = upd["update_id"] + 1
-                    msg = upd.get("message", {})
-                    chat_id = str(msg.get("chat", {}).get("id", ""))
-                    text = msg.get("text", "").strip().lower()
-
-                    if chat_id == str(CHAT_ID):
-                        b = bot.betting
-                        bet_amt, b_type = b.get_current_bet()
-                        if text == "/status":
-                            bot.send_telegram_sync(
-                                f"📊 <b>STATUS UPDATE (V58.1 TDA)</b>\n\n"
-                                f"• Level: <b>{b.level} ({b.level_state})</b>\n"
-                                f"• Bet: <b>{bet_amt:,} ({b_type})</b>\n"
-                                f"• Profit: <b>{b.current_profit:+,.0f}</b>\n"
-                                f"• Win Rate: <b>{b.get_wr():.1f}%</b>\n"
-                                f"• Max Level: <b>{b.max_level_reached}</b>\n"
-                                f"• Max DD: <b>{b.max_loss_amount:,.0f}</b>"
-                            )
-                        elif text == "/reset":
-                            b.reset_all()
-                            bot.send_telegram_sync("🔄 Level 1 သို့ ပြန်လည် Reset ချပြီးပါပြီ။")
-        except Exception:
-            time.sleep(2)
-        time.sleep(1)
-
-def run_api_poller(bot: V58LiveBot):
-    seen_periods = set()
-    seen_order = deque(maxlen=1000)
-    is_first_poll = True
-
-    headers = {
-        "accept": "application/json, text/plain, */*",
-        "authorization": f"Bearer {LOTTERY_AUTH}",
-        "content-type": "application/json;charset=UTF-8",
-        "origin": "https://6win598.com",
-        "referer": "https://6win598.com/",
-        "user-agent": "Mozilla/5.0",
-    }
-
-    while True:
-        try:
-            payload = {
-                "pageSize": 10, "pageNo": 1, "typeId": 30, "language": 7,
-                "random": "036263f367384d418be07465793c8da8",
-                "signature": "55F4FD150F15F090B943374F3C9BE78B",
-                "timestamp": int(time.time()),
+    def start_polling_loop(self):
+        def worker():
+            print("[V400] Polling worker started...", flush=True)
+            headers = {
+                "accept": "application/json, text/plain, */*",
+                "authorization": f"Bearer {LOTTERY_AUTH}" if not LOTTERY_AUTH.startswith("Bearer") else LOTTERY_AUTH,
+                "content-type": "application/json;charset=UTF-8",
+                "origin": "https://6win598.com",
+                "referer": "https://6win598.com/",
+                "user-agent": "Mozilla/5.0",
             }
-            res = requests.post(CONFIG["api_url"], headers=headers, json=payload, timeout=5)
-            if res.status_code == 200:
-                data = res.json().get("data", {}).get("list", [])
-                if data:
-                    sorted_data = sorted(data, key=lambda x: int(x.get("issueNumber", 0)))
-                    for item in sorted_data:
-                        period = str(item.get("issueNumber"))
-                        num = int(item.get("number"))
-                        if period not in seen_periods:
-                            seen_periods.add(period)
-                            seen_order.append(period)
-                            if len(seen_periods) > 1000:
-                                oldest = seen_order.popleft()
-                                seen_periods.discard(oldest)
+            while True:
+                try:
+                    payload = {
+                        "pageSize": 10, "pageNo": 1, "typeId": 30, "language": 7,
+                        "random": "036263f367384d418be07465793c8da8",
+                        "signature": "55F4FD150F15F090B943374F3C9BE78B",
+                        "timestamp": int(time.time()),
+                    }
+                    res = requests.post(CONFIG["api_url"], json=payload, headers=headers, timeout=5)
+                    if res.status_code == 200:
+                        data = res.json()
+                        list_data = data.get("data", {}).get("list", [])
+                        if list_data:
+                            latest = list_data[0]
+                            period = str(latest.get("issueNumber"))
+                            digit = int(latest.get("number"))
+                            if period != self.last_processed_period:
+                                self.last_processed_period = period
+                                self.process_round(period, digit)
+                                time.sleep(1.5)
+                except Exception as e:
+                    print(f"[Polling Error] {e}", flush=True)
+                time.sleep(CONFIG["poll_interval"])
 
-                            if not is_first_poll:
-                                bot.process_round(period, num)
-                            else:
-                                bot.engine.resolve(num)
-
-                    if is_first_poll:
-                        is_first_poll = False
-        except Exception as e:
-            print(f"[POLL ERROR] {e}", flush=True)
-
-        time.sleep(CONFIG["poll_interval"])
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
 
 app = Flask(__name__)
-GLOBAL_BOT: Optional[V58LiveBot] = None
+GLOBAL_BOT: Optional[V400LiveBot] = None
 
 @app.route("/")
 def index():
-    return "V58.1 TOPOLOGICAL-SINGULARITY Live!", 200
+    return "V400 BotStep-Reset Engine Active!", 200
 
 @app.route("/health")
 def health():
     return jsonify({"status": "healthy"}), 200
 
 if __name__ == "__main__":
-    GLOBAL_BOT = V58LiveBot()
-    threading.Thread(target=run_api_poller, args=(GLOBAL_BOT,), daemon=True).start()
-    threading.Thread(target=poll_telegram_commands, args=(GLOBAL_BOT,), daemon=True).start()
-
+    GLOBAL_BOT = V400LiveBot()
+    GLOBAL_BOT.start_polling_loop()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
