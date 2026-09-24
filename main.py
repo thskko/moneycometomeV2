@@ -48,9 +48,9 @@ def get_level_bet(level: int, base_unit: int = CONFIG["base_unit"]) -> Dict[str,
 
 
 # ============================================================
-# 3. V57 COSMIC EQUILIBRIUM SOVEREIGN ENGINE (90% Signal Flow)
+# 3. V59 INFINITE SINGULARITY PREDICTOR ENGINE (95% Signal Flow)
 # ============================================================
-class CosmicEquilibriumEngineV57:
+class InfiniteSingularityEngineV59:
     def __init__(self, history_window: int = 80):
         self.history: List[str] = []
         self.history_window = history_window
@@ -77,11 +77,11 @@ class CosmicEquilibriumEngineV57:
         l6 = h[-6] if len(h) >= 6 else l5
         l7 = h[-7] if len(h) >= 7 else l6
 
-        # 🎯 ASYMMETRIC TIERED SHIELD: Level 1 တွင် 90% Signals | Level 2+ တွင် 0.85 Fortress
-        required_conf = 0.48 if level == 1 else (0.85 if level == 2 else 0.90)
+        # 🎯 ASYMMETRIC TIERED SHIELD: Level 1 တွင် 95% Signals | Level 2+ တွင် 0.85 Fortress
+        required_conf = 0.45 if level == 1 else (0.85 if level == 2 else 0.90)
 
         # -------------------------------------------------------------
-        # STEP 2 CLOSER: 5-Tick Universal Hazard Guard & Full Re-Sync
+        # STEP 2 CLOSER: 6-Tick Universal Hazard Guard & Re-Sync
         # -------------------------------------------------------------
         if step == 2:
             streak_len = 1
@@ -106,13 +106,13 @@ class CosmicEquilibriumEngineV57:
                 self.step2_delayed = True
                 return "SKIP", "BIG", "Step 2: Ping-Pong Delay Guard (PP >= 5)"
 
-            # 🎯 5-TICK UNIVERSAL CHAOS GUARD
-            flips = sum(1 for i in range(len(h) - 4, len(h)) if h[i] != h[i - 1])
+            # 🎯 6-TICK MULTI-SCALE CHAOS GUARD
+            flips = sum(1 for i in range(len(h) - 5, len(h)) if h[i] != h[i - 1])
             if flips >= 3:
                 self.step2_delayed = True
-                return "SKIP", "BIG", "Step 2: 5-Tick Universal Chaos Guard"
+                return "SKIP", "BIG", "Step 2: 6-Tick Multi-Scale Chaos Guard"
 
-            # 🎯 DYNAMIC EXPLICIT RE-ALIGNMENT WITH MARKOV COVERAGE
+            # 🎯 DYNAMIC EXPLICIT RE-ALIGNMENT
             if self.step2_delayed:
                 self.step2_delayed = False
                 if "TREND" in self.active_pattern or "MARKOV" in self.active_pattern:
@@ -130,7 +130,7 @@ class CosmicEquilibriumEngineV57:
             return "BET", self.locked_step2_pred, self.step2_reason
 
         # -------------------------------------------------------------
-        # STEP 1 ENTRY: 14 High-Density Patterns (Omni-Resonance)
+        # STEP 1 ENTRY: 18 High-Density Patterns (Omni-Resonance)
         # -------------------------------------------------------------
         candidate_p1 = None
         candidate_p2 = None
@@ -211,7 +211,15 @@ class CosmicEquilibriumEngineV57:
                 pattern_name = "PAIR"
                 reason = "Tier-2: 2-1 Breakout Symmetry"
 
-            # Pattern 9: Dragon 3-Streak
+            # Pattern 9: 1-2-1 Butterfly Sandwich
+            elif l4 != l3 and l3 == l2 and l2 != l1:
+                candidate_p1 = l1
+                candidate_p2 = l1
+                detected_conf = 0.77
+                pattern_name = "PAIR"
+                reason = "Level-1: Butterfly Sandwich Flow"
+
+            # Pattern 10: Dragon 3-Streak
             elif streak_len == 3:
                 candidate_p1 = l1
                 candidate_p2 = l1
@@ -219,7 +227,7 @@ class CosmicEquilibriumEngineV57:
                 pattern_name = "TREND"
                 reason = "Level-1: Dragon 3-Streak"
 
-            # Pattern 10: Ping-Pong 3-Step
+            # Pattern 11: Ping-Pong 3-Step
             elif l1 != l2 and l2 != l3:
                 candidate_p1 = "SMALL" if l1 == "BIG" else "BIG"
                 candidate_p2 = l1
@@ -227,7 +235,7 @@ class CosmicEquilibriumEngineV57:
                 pattern_name = "PINGPONG"
                 reason = "Level-1: Ping-Pong 3-Step"
 
-            # Pattern 11: Early 2-Streak Momentum
+            # Pattern 12: Early 2-Streak Momentum
             elif l1 == l2 and l3 == l4 and l2 != l3:
                 candidate_p1 = l1
                 candidate_p2 = l1
@@ -235,7 +243,15 @@ class CosmicEquilibriumEngineV57:
                 pattern_name = "TREND"
                 reason = "Level-1: Early 2-Streak Momentum"
 
-            # Pattern 12: Micro-Chop Vector
+            # Pattern 13: Micro-Mirror Symmetry
+            elif l3 != l2 and l2 == l1:
+                candidate_p1 = "SMALL" if l1 == "BIG" else "BIG"
+                candidate_p2 = l1
+                detected_conf = 0.70
+                pattern_name = "PAIR"
+                reason = "Level-1: Micro-Mirror Symmetry"
+
+            # Pattern 14: Micro-Chop Vector
             elif l1 != l2 and l3 == l2:
                 candidate_p1 = "SMALL" if l1 == "BIG" else "BIG"
                 candidate_p2 = l1
@@ -243,7 +259,7 @@ class CosmicEquilibriumEngineV57:
                 pattern_name = "PINGPONG"
                 reason = "Level-1: Micro-Chop Momentum"
 
-            # Pattern 13: Refined 7-Tick Velocity Resonance
+            # Pattern 15: Refined 7-Tick Velocity Resonance
             elif sum(1 for x in h[-7:] if x == l1) >= 5:
                 candidate_p1 = l1
                 candidate_p2 = l1
@@ -251,7 +267,15 @@ class CosmicEquilibriumEngineV57:
                 pattern_name = "TREND"
                 reason = "Level-1: 7-Tick Velocity Resonance"
 
-            # Pattern 14: Dual-Horizon Markov Engine
+            # Pattern 16: Instant Local Adaptive Bias
+            elif l1 == l2:
+                candidate_p1 = l1
+                candidate_p2 = l1
+                detected_conf = 0.58
+                pattern_name = "TREND"
+                reason = "Level-1: Instant Momentum Flow"
+
+            # Pattern 17: Dual-Horizon Markov Engine
             else:
                 target = tuple(h[-2:])
                 pair_counts = defaultdict(int)
@@ -264,18 +288,18 @@ class CosmicEquilibriumEngineV57:
                     total = sum(pair_counts.values())
                     if total >= 3:
                         conf = pair_counts[best] / total
-                        if conf >= 0.58:
+                        if conf >= 0.55:
                             candidate_p1 = best
                             candidate_p2 = best
                             detected_conf = conf
                             pattern_name = "TREND" if best == l1 else "PINGPONG"
                             reason = f"Fast Markov Trend ({conf*100:.0f}%, N={total})"
 
-        # 🎯 ENHANCED LEVEL 2 STABILITY SHIELD (5-TICK VERIFIED)
+        # 🎯 ENHANCED LEVEL 2 STABILITY SHIELD (6-TICK MULTI-SCALE VERIFIED)
         if level >= 2:
             recent_flips = sum(1 for i in range(len(h) - 5, len(h)) if h[i] != h[i - 1])
             if recent_flips >= 3:
-                return "SKIP", "BIG", "Level 2: Enhanced Stability Shield Active"
+                return "SKIP", "BIG", "Level 2: Multi-Scale Stability Shield Active"
 
         if candidate_p1 and detected_conf >= required_conf:
             self.active_pattern = pattern_name
@@ -380,7 +404,7 @@ class BettingStateManager:
 class LiveSignalBot:
     def __init__(self):
         self.lock = threading.Lock()
-        self.engine = CosmicEquilibriumEngineV57()
+        self.engine = InfiniteSingularityEngineV59()
         self.betting = BettingStateManager()
         self.last_signal_info: Optional[Dict[str, any]] = None
         self.last_processed_period: Optional[str] = None
@@ -505,7 +529,7 @@ class LiveSignalBot:
     # -------------------------------------------------------------
     def start_polling_loop(self):
         def worker():
-            print("[LiveSignalBot V57] Starting 6lottery API Poller...", flush=True)
+            print("[LiveSignalBot V59] Starting 6lottery API Poller...", flush=True)
             headers = {
                 "accept": "application/json, text/plain, */*",
                 "authorization": (
@@ -558,19 +582,20 @@ class LiveSignalBot:
 
 
 # ============================================================
-# 6. FLASK WEB SERVER & FAST BOOT FOR RENDER
+# 6. FLASK WEB SERVER FOR RENDER DEPLOYMENT
 # ============================================================
 app = Flask(__name__)
 
-# 🎯 FAST-BOOT FIX: Gunicorn နှင့် Render အတွက် Global Scope တွင် တိုက်ရိုက် စတင်သည်
 GLOBAL_BOT = LiveSignalBot()
 GLOBAL_BOT.start_polling_loop()
 
 @app.route("/")
 def index():
+    if not GLOBAL_BOT:
+        return "Bot is initializing...", 200
     return jsonify({
         "status": "online",
-        "engine": "V57 Cosmic Equilibrium Sovereign 90% Active Flow",
+        "engine": "V59 Infinite Singularity 95% Active Flow",
         "current_level": GLOBAL_BOT.betting.level,
         "max_level_reached": GLOBAL_BOT.betting.max_level_reached,
         "total_profit": GLOBAL_BOT.betting.total_profit,
