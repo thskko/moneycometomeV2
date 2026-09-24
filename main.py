@@ -48,9 +48,9 @@ def get_level_bet(level: int, base_unit: int = CONFIG["base_unit"]) -> Dict[str,
 
 
 # ============================================================
-# 3. V59 INFINITE SINGULARITY PREDICTOR ENGINE (95% Signal Flow)
+# 3. V61 OMNIPOTENT INFINITY PREDICTOR ENGINE (95% Signal Flow)
 # ============================================================
-class InfiniteSingularityEngineV59:
+class OmnipotentInfinityEngineV61:
     def __init__(self, history_window: int = 80):
         self.history: List[str] = []
         self.history_window = history_window
@@ -76,12 +76,14 @@ class InfiniteSingularityEngineV59:
         l5 = h[-5] if len(h) >= 5 else l4
         l6 = h[-6] if len(h) >= 6 else l5
         l7 = h[-7] if len(h) >= 7 else l6
+        l8 = h[-8] if len(h) >= 8 else l7
 
-        # 🎯 ASYMMETRIC TIERED SHIELD: Level 1 တွင် 95% Signals | Level 2+ တွင် 0.85 Fortress
-        required_conf = 0.45 if level == 1 else (0.85 if level == 2 else 0.90)
+        # 🎯 ASYMMETRIC TIERED SHIELD:
+        # Level 1: 0.45 (95% Signals) | Level 2: 0.65 (Fast 1-2 Round Recovery) | Level 3+: 0.78
+        required_conf = 0.45 if level == 1 else (0.65 if level == 2 else 0.78)
 
         # -------------------------------------------------------------
-        # STEP 2 CLOSER: 6-Tick Universal Hazard Guard & Re-Sync
+        # STEP 2 CLOSER: Recursive Hazard Guard & Full Re-Sync
         # -------------------------------------------------------------
         if step == 2:
             streak_len = 1
@@ -106,13 +108,13 @@ class InfiniteSingularityEngineV59:
                 self.step2_delayed = True
                 return "SKIP", "BIG", "Step 2: Ping-Pong Delay Guard (PP >= 5)"
 
-            # 🎯 6-TICK MULTI-SCALE CHAOS GUARD
-            flips = sum(1 for i in range(len(h) - 5, len(h)) if h[i] != h[i - 1])
-            if flips >= 3:
+            # 🎯 5-TICK UNIVERSAL CHAOS GUARD
+            flips = sum(1 for i in range(len(h) - 4, len(h)) if h[i] != h[i - 1])
+            if flips >= 4:
                 self.step2_delayed = True
-                return "SKIP", "BIG", "Step 2: 6-Tick Multi-Scale Chaos Guard"
+                return "SKIP", "BIG", "Step 2: Universal Chaos Guard"
 
-            # 🎯 DYNAMIC EXPLICIT RE-ALIGNMENT
+            # 🎯 RECURSIVE RE-ALIGNMENT WITH HAZARD RE-CHECK
             if self.step2_delayed:
                 self.step2_delayed = False
                 if "TREND" in self.active_pattern or "MARKOV" in self.active_pattern:
@@ -130,7 +132,7 @@ class InfiniteSingularityEngineV59:
             return "BET", self.locked_step2_pred, self.step2_reason
 
         # -------------------------------------------------------------
-        # STEP 1 ENTRY: 18 High-Density Patterns (Omni-Resonance)
+        # STEP 1 ENTRY: 14 High-Density Patterns (Fast Recovery)
         # -------------------------------------------------------------
         candidate_p1 = None
         candidate_p2 = None
@@ -187,11 +189,11 @@ class InfiniteSingularityEngineV59:
                 else:
                     break
 
-            # 🎯 ANTI-EXHAUSTION: Level 2+ Recovery တွင် ၄ လုံးကျော် Dragon ကို လိုက်မစီးစေပါ
+            # 🎯 Level 2 တွင် Dragon လိုက်ခွင့်ပြုခြင်း (Freeze မဖြစ်စေရန်)
             if streak_len >= 4:
                 candidate_p1 = l1
                 candidate_p2 = l1
-                detected_conf = min(0.95, 0.80 + (streak_len * 0.03)) if level == 1 else 0.82
+                detected_conf = min(0.95, 0.82 + (streak_len * 0.03))
                 pattern_name = "TREND"
                 reason = f"Dragon Streak Flow (Len: {streak_len})"
 
@@ -211,71 +213,47 @@ class InfiniteSingularityEngineV59:
                 pattern_name = "PAIR"
                 reason = "Tier-2: 2-1 Breakout Symmetry"
 
-            # Pattern 9: 1-2-1 Butterfly Sandwich
-            elif l4 != l3 and l3 == l2 and l2 != l1:
-                candidate_p1 = l1
-                candidate_p2 = l1
-                detected_conf = 0.77
-                pattern_name = "PAIR"
-                reason = "Level-1: Butterfly Sandwich Flow"
-
-            # Pattern 10: Dragon 3-Streak
+            # Pattern 9: Dragon 3-Streak
             elif streak_len == 3:
                 candidate_p1 = l1
                 candidate_p2 = l1
                 detected_conf = 0.76
                 pattern_name = "TREND"
-                reason = "Level-1: Dragon 3-Streak"
+                reason = "Dragon 3-Streak Momentum"
 
-            # Pattern 11: Ping-Pong 3-Step
+            # Pattern 10: Ping-Pong 3-Step
             elif l1 != l2 and l2 != l3:
                 candidate_p1 = "SMALL" if l1 == "BIG" else "BIG"
                 candidate_p2 = l1
                 detected_conf = 0.75
                 pattern_name = "PINGPONG"
-                reason = "Level-1: Ping-Pong 3-Step"
+                reason = "Ping-Pong 3-Step Momentum"
 
-            # Pattern 12: Early 2-Streak Momentum
+            # Pattern 11: Early 2-Streak Momentum
             elif l1 == l2 and l3 == l4 and l2 != l3:
                 candidate_p1 = l1
                 candidate_p2 = l1
                 detected_conf = 0.72
                 pattern_name = "TREND"
-                reason = "Level-1: Early 2-Streak Momentum"
+                reason = "Early 2-Streak Momentum"
 
-            # Pattern 13: Micro-Mirror Symmetry
-            elif l3 != l2 and l2 == l1:
-                candidate_p1 = "SMALL" if l1 == "BIG" else "BIG"
-                candidate_p2 = l1
-                detected_conf = 0.70
-                pattern_name = "PAIR"
-                reason = "Level-1: Micro-Mirror Symmetry"
-
-            # Pattern 14: Micro-Chop Vector
+            # Pattern 12: Micro-Chop Vector
             elif l1 != l2 and l3 == l2:
                 candidate_p1 = "SMALL" if l1 == "BIG" else "BIG"
                 candidate_p2 = l1
                 detected_conf = 0.68
                 pattern_name = "PINGPONG"
-                reason = "Level-1: Micro-Chop Momentum"
+                reason = "Micro-Chop Momentum"
 
-            # Pattern 15: Refined 7-Tick Velocity Resonance
-            elif sum(1 for x in h[-7:] if x == l1) >= 5:
+            # Pattern 13: 🎯 8-Tick Symmetrical Velocity Resonance
+            elif sum(1 for x in h[-8:] if x == l1) >= 6:
                 candidate_p1 = l1
                 candidate_p2 = l1
-                detected_conf = 0.64
+                detected_conf = 0.65
                 pattern_name = "TREND"
-                reason = "Level-1: 7-Tick Velocity Resonance"
+                reason = "Level-1: 8-Tick Velocity Resonance"
 
-            # Pattern 16: Instant Local Adaptive Bias
-            elif l1 == l2:
-                candidate_p1 = l1
-                candidate_p2 = l1
-                detected_conf = 0.58
-                pattern_name = "TREND"
-                reason = "Level-1: Instant Momentum Flow"
-
-            # Pattern 17: Dual-Horizon Markov Engine
+            # Pattern 14: Dual-Horizon Markov Engine
             else:
                 target = tuple(h[-2:])
                 pair_counts = defaultdict(int)
@@ -295,11 +273,11 @@ class InfiniteSingularityEngineV59:
                             pattern_name = "TREND" if best == l1 else "PINGPONG"
                             reason = f"Fast Markov Trend ({conf*100:.0f}%, N={total})"
 
-        # 🎯 ENHANCED LEVEL 2 STABILITY SHIELD (6-TICK MULTI-SCALE VERIFIED)
+        # LEVEL 2 STABILITY SHIELD: အလွန်အမင်း မတည်ငြိမ်မှသာ တားသည်
         if level >= 2:
             recent_flips = sum(1 for i in range(len(h) - 5, len(h)) if h[i] != h[i - 1])
-            if recent_flips >= 3:
-                return "SKIP", "BIG", "Level 2: Multi-Scale Stability Shield Active"
+            if recent_flips >= 4:
+                return "SKIP", "BIG", "Level 2: Extreme Chaos Shield Active"
 
         if candidate_p1 and detected_conf >= required_conf:
             self.active_pattern = pattern_name
@@ -404,7 +382,7 @@ class BettingStateManager:
 class LiveSignalBot:
     def __init__(self):
         self.lock = threading.Lock()
-        self.engine = InfiniteSingularityEngineV59()
+        self.engine = OmnipotentInfinityEngineV61()
         self.betting = BettingStateManager()
         self.last_signal_info: Optional[Dict[str, any]] = None
         self.last_processed_period: Optional[str] = None
@@ -529,7 +507,7 @@ class LiveSignalBot:
     # -------------------------------------------------------------
     def start_polling_loop(self):
         def worker():
-            print("[LiveSignalBot V59] Starting 6lottery API Poller...", flush=True)
+            print("[LiveSignalBot V61] Starting 6lottery API Poller...", flush=True)
             headers = {
                 "accept": "application/json, text/plain, */*",
                 "authorization": (
@@ -595,7 +573,7 @@ def index():
         return "Bot is initializing...", 200
     return jsonify({
         "status": "online",
-        "engine": "V59 Infinite Singularity 95% Active Flow",
+        "engine": "V61 Omnipotent Infinity 95% Active Flow",
         "current_level": GLOBAL_BOT.betting.level,
         "max_level_reached": GLOBAL_BOT.betting.max_level_reached,
         "total_profit": GLOBAL_BOT.betting.total_profit,
